@@ -273,7 +273,7 @@ def main(args):
     detects = np.array([x[1] for x in plotting_tups])
     if args.autoencode:
         np.savetxt('results/{}/{}'.format(args.data, 'detects_k{}_autoencode.csv'.format(args.k)), detects.astype(int))
-    elif args.autoencode:
+    elif args.pca:
         np.savetxt('results/{}/{}'.format(args.data, 'detects_k{}_pca.csv'.format(args.k)), detects.astype(int))
     else:
         np.savetxt('results/{}/{}'.format(args.data, 'detects_k{}.csv'.format(args.k)), detects.astype(int))
