@@ -96,6 +96,9 @@ class BoostMetric:
         w_s = []
         Z_s = []
         margins_count = []
+        self.precisions = []
+        self.recalls = []
+        self.f1s = []
         for j in range(self.J):
             # A_hat_curr = self.calc_Ahat()
             # if not is_symmetric(A_hat_curr):
@@ -188,7 +191,10 @@ class BoostMetric:
             plt.savefig('figures/debugging_figs/X_{}_{}.png'.format(self.args.data, j))
             plt.close()
             print()
-
+            curr_f1, curr_precision, curr_recall = final_classification(features=self.data, labels=self.labels, X=self.curr_dist_mat)
+            self.f1s.append(curr_f1)
+            self.precisions.append(curr_precision)
+            self.recalls.append(curr_recall)
 
         self.w_s = np.array(w_s)
         self.Z_s = np.array(Z_s)
@@ -217,6 +223,8 @@ class BoostMetric:
 
         anom_feats = self.data[self.labels == 0, :]
         anom_dists_mean = np.mean(anom_dists)
+        #print("USING ANOM DIST MAX")
+        #anom_dists_mean = np.max(anom_dists)
         # anomaly specific index
         a_k_indx = np.argmin(np.abs(anom_dists - anom_dists_mean))
         selected_anom_idx = np.where(self.labels==0)[0][a_k_indx]
@@ -446,10 +454,13 @@ def final_classification(features, labels, X):
     dists = np.array(dists)
     chisq_vals = np.array(chisq_vals)
     sigma = dists.std()
-    preds_chisq = np.ones_like(labels)
-    preds_chisq[chisq_vals <= 0.1] = 0
-    print("ChiSq: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(labels, preds_chisq), f1_score(labels, preds_chisq), precision_score(labels, preds_chisq), recall_score(labels, preds_chisq)))
-    print("Avg Precision Score {}".format(average_precision_score(labels, chisq_vals)))
+    preds_chisq = np.zeros_like(labels)
+    preds_chisq[chisq_vals <= 0.1] = 1
+    #print("ChiSq: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(labels, preds_chisq), f1_score(labels, preds_chisq), precision_score(labels, preds_chisq), recall_score(labels, preds_chisq)))
+    #print("Avg Precision Score {}".format(average_precision_score(labels, chisq_vals)))
+
+    # class zero is anomaly, switch it for sake of calculation
+    return f1_score(1-labels, preds_chisq), precision_score(1-labels, preds_chisq), recall_score(1-labels, preds_chisq)
     
 
 
@@ -485,4 +496,13 @@ if __name__ == "__main__":
 
     bm = BoostMetric(data=features, labels=labels, init_dist_mat=init_dist_mat, args=args, v=args.v, J=args.iters, top_k=args.k)
     X = bm.iterate()
-    final_classification(features=features, labels=labels, X=X)
+    plt.plot(np.arange(args.iters), bm.f1s, label="F1")
+    plt.plot(np.arange(args.iters), bm.precisions, label='Precision')
+    plt.plot(np.arange(args.iters), bm.recalls, label='Recall')
+    plt.xlabel("Iterations")
+    plt.ylabel("Scores")
+    plt.legend(loc='best')
+    plt.title("Scores {}".format(args.data))
+    plt.savefig('figures/debugging_figs/scores_{}'.format(args.data))
+    plt.close()
+    #final_classification(features=features, labels=labels, X=X)
