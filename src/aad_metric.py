@@ -10,7 +10,7 @@ from scipy.spatial.distance import mahalanobis
 from scipy.stats import chisquare, chi2
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.svm import SVC
+from sklearn.svm import SVC, OneClassSVM
 from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score
 from sklearn.utils import shuffle
 from numpy.linalg import inv
@@ -32,6 +32,7 @@ sns.set()
 np.random.seed(42)
 
 from gmm import sim_gmm
+from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -99,7 +100,9 @@ class BoostMetric:
         self.precisions = []
         self.recalls = []
         self.f1s = []
+        self.num_preds = []
         for j in range(self.J):
+            print(">>> ITER {} <<<".format(j))
             # A_hat_curr = self.calc_Ahat()
             # if not is_symmetric(A_hat_curr):
             #     A_hat_curr = (A_hat_curr + A_hat_curr.T)/2
@@ -132,7 +135,7 @@ class BoostMetric:
             # calculate weight with bisection search
             w_j = self.bisection_search(curr_Z, H_s)
 
-            print("W_j {}".format(w_j))
+            #print("W_j {}".format(w_j))
             sns.heatmap(curr_Z)
             plt.savefig('figures/debugging_figs/Z_{}_{}.png'.format(self.args.data, j))
             plt.close()          
@@ -150,13 +153,13 @@ class BoostMetric:
             for r in range(self.u_r.shape[0]):
                 u_r_new = self.u_r[r]*np.exp(-H_s[r]*w_j)
                 #u_r_new = np.exp(-H_s[r]*w_j)
-                print("U{} {}".format(r, u_r_new))
+                #print("U{} {}".format(r, u_r_new))
                 new_u.append(u_r_new)
             new_u = np.array(new_u)
             new_u = new_u / new_u.sum()
             self.u_r = new_u
             self.u_r_arr = self.u_r.tolist()
-            print(self.u_r)
+           # print(self.u_r)
             # ------------------------------------------------------------ #
             # ------------------------------------------------------------ #
             # ------------------------------------------------------------ #
@@ -182,20 +185,21 @@ class BoostMetric:
                 self.curr_dist_mat += np.array(w_s)[i]*np.array(Z_s)[i]
 
             # margin calculations
-            print("\nCurrent Margins...")
+            #print("\nCurrent Margins...")
             for i in range(len(A_arr)):
                 H_i = np.trace(A_arr[i] @ self.curr_dist_mat.T)
-                print("   >",H_i)
+                #print("   >",H_i)
 
             sns.heatmap(self.curr_dist_mat)
             plt.savefig('figures/debugging_figs/X_{}_{}.png'.format(self.args.data, j))
             plt.close()
-            print()
-            curr_f1, curr_precision, curr_recall = final_classification(features=self.data, labels=self.labels, X=self.curr_dist_mat)
+            #print()
+            curr_f1, curr_precision, curr_recall, num_preds = final_classification(features=self.data, labels=self.labels, X=self.curr_dist_mat)
             self.f1s.append(curr_f1)
             self.precisions.append(curr_precision)
             self.recalls.append(curr_recall)
-
+            self.num_preds.append(num_preds)
+            print()
         self.w_s = np.array(w_s)
         self.Z_s = np.array(Z_s)
         
@@ -251,7 +255,7 @@ class BoostMetric:
         # fit decision boundary
         clf = SVC(kernel='linear', C=1.0)
         clf.fit(D_tot, label_tot)
-        print("Classification Training Score {}".format(clf.score(D_tot, label_tot)))
+        #print("Classification Training Score {}".format(clf.score(D_tot, label_tot)))
 
         # calculate top_k most important features
         coef_abs = np.abs(clf.coef_)
@@ -279,9 +283,9 @@ class BoostMetric:
         curr_triplet = (a_1, a_2, a_k)
         selected_a1_idx = np.where(self.labels == 1)[0][st_idx[0]]
         selected_a2_idx = np.where(self.labels == 1)[0][st_idx[1]]
-        print("Dist a1->a2", mahalanobis(a_1, a_2, self.curr_dist_mat))
-        print("Dist a1->ak", mahalanobis(a_1, a_k, self.curr_dist_mat))
-        print("Dist a2->ak", mahalanobis(a_2, a_k, self.curr_dist_mat))
+        #print("Dist a1->a2", mahalanobis(a_1, a_2, self.curr_dist_mat))
+        #print("Dist a1->ak", mahalanobis(a_1, a_k, self.curr_dist_mat))
+        #print("Dist a2->ak", mahalanobis(a_2, a_k, self.curr_dist_mat))
 
         self.data = np.delete(self.data, [selected_anom_idx, selected_a1_idx, selected_a2_idx], axis=0)
         self.labels = np.delete(self.labels, [selected_anom_idx, selected_a1_idx, selected_a2_idx], axis=0)
@@ -346,10 +350,10 @@ class BoostMetric:
         top_40_far_labels = self.labels[top_40_far_idx]
         top_40_close_idx = np.argpartition(dists, 40)[:40]
         top_40_close_labels = self.labels[top_40_close_idx]
-        print("Farthest 40 Points Anomalies {}".format((top_40_far_labels == 0).sum()))
-        print("Closest 40 Points Anomalies {}".format((top_40_close_labels == 0).sum()))
-        print("Three Sigma {}".format(three_sigma_empirical))
-        print("Dist Mean {} Min {} Max {}".format(dists.mean(), dists.min(), dists.max()))
+        #print("Farthest 40 Points Anomalies {}".format((top_40_far_labels == 0).sum()))
+        #print("Closest 40 Points Anomalies {}".format((top_40_close_labels == 0).sum()))
+        #print("Three Sigma {}".format(three_sigma_empirical))
+        #print("Dist Mean {} Min {} Max {}".format(dists.mean(), dists.min(), dists.max()))
 
         return (top_40_far_labels == 0).sum()
     
@@ -450,17 +454,23 @@ def final_classification(features, labels, X):
         a_i = features[i, :]
         curr_dist = mahalanobis(a_i, mu, X)
         dists.append(curr_dist)
-        chisq_vals.append(chi2.cdf(curr_dist, df=features.shape[1]-1))
+        chisq_vals.append(chi2.sf(curr_dist, df=features.shape[1]-1))
     dists = np.array(dists)
     chisq_vals = np.array(chisq_vals)
     sigma = dists.std()
     preds_chisq = np.zeros_like(labels)
+    #print(chisq_vals)
     preds_chisq[chisq_vals <= 0.1] = 1
     #print("ChiSq: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(labels, preds_chisq), f1_score(labels, preds_chisq), precision_score(labels, preds_chisq), recall_score(labels, preds_chisq)))
     #print("Avg Precision Score {}".format(average_precision_score(labels, chisq_vals)))
 
     # class zero is anomaly, switch it for sake of calculation
-    return f1_score(1-labels, preds_chisq), precision_score(1-labels, preds_chisq), recall_score(1-labels, preds_chisq)
+    cf1 = f1_score(1-labels, preds_chisq)
+    cprec = precision_score(1-labels, preds_chisq)
+    crec = recall_score(1-labels, preds_chisq)
+    print("Number Predicted Anomalies {}".format(preds_chisq.sum()))
+
+    return cf1, cprec, crec, preds_chisq.sum()
     
 
 
@@ -470,6 +480,8 @@ if __name__ == "__main__":
     #main_boost(args)
 
     data, features, labels = resolve_data(args)
+    # unique count of labels
+    print("Unique Labels {}".format(np.unique(labels, return_counts=True)))
     features = remove_bad_features(features)
     scaler = StandardScaler()
     
@@ -491,6 +503,37 @@ if __name__ == "__main__":
         labels[labels != 0] = 1
 
     features = scaler.fit_transform(features)
+    # randomly select 10000 samples from features
+    features_subset = shuffle(features, random_state=42)[:10000]
+    svm_boost = OCSVMBoost(data=features_subset, m=30)
+    hypotheses, lg_mults = svm_boost.fit()
+    svm_boost_preds = []
+    print("Number of Hypotheses {}".format(len(hypotheses)))
+    for i, h in enumerate(hypotheses):
+        print(">> Enumerating Hypothesis {} <<".format(i))
+        cpreds = h.predict(features)
+        svm_boost_preds.append(cpreds*lg_mults[i])
+    print()
+    svm_boost_preds = np.array(svm_boost_preds)
+    svm_boost_preds = np.sign(np.sum(svm_boost_preds, axis=0)).T
+    svm_boost_preds[svm_boost_preds == 1] = 0 # nominals
+    svm_boost_preds[svm_boost_preds == -1] = 1 # outliers
+    print(svm_boost_preds.shape)
+    #####################
+    print("Fitting OC-SVM {}".format(features_subset.shape))
+    clf = OneClassSVM(kernel='linear', nu=0.5, gamma='scale', shrinking=False)
+    clf.fit(features_subset, sample_weight=np.ones(features_subset.shape[0])/features_subset.shape[0])
+    print("Predicting OC-SVM")
+    svm_preds = clf.predict(features)
+    svm_preds[svm_preds == 1] = 0  # nominals
+    svm_preds[svm_preds == -1] = 1 # outliers
+
+    print("Fitting Naive OC-SVM {}".format(features_subset.shape))
+    clf_naive = NaiveBoostedOneClassSVM(n_estimators=len(hypotheses))
+    clf_naive.fit(features_subset)
+    naive_preds = clf_naive.predict(features)
+    naive_preds[naive_preds == 1] = 0  # nominals
+    naive_preds[naive_preds == -1] = 1 # outliers
     init_dist_mat = init_covar(features)
     print("Data {} Shape {}".format(args.data, features.shape))
 
@@ -505,4 +548,20 @@ if __name__ == "__main__":
     plt.title("Scores {}".format(args.data))
     plt.savefig('figures/debugging_figs/scores_{}'.format(args.data))
     plt.close()
+
+    plt.plot(np.arange(args.iters), bm.num_preds)
+    plt.xlabel("Iterations")
+    plt.ylabel("Number of Predicted Anomalies (ChiSq)")
+    #plt.legend(loc='best')
+    plt.title("Number Predicted {}".format(args.data))
+    plt.savefig('figures/debugging_figs/numpreds_{}'.format(args.data))
+    plt.close()
+
+    
+    print("\nSVM: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, svm_preds), precision_score(1-labels, svm_preds), recall_score(1-labels, svm_preds)))
+    print("SVM Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, svm_boost_preds), precision_score(1-labels, svm_boost_preds), recall_score(1-labels, svm_boost_preds)))
+    print("SVM Naive Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, naive_preds), precision_score(1-labels, naive_preds), recall_score(1-labels, naive_preds)))
+    print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
+
     #final_classification(features=features, labels=labels, X=X)
+    ##############################
