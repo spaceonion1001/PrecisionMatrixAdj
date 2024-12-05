@@ -17,6 +17,7 @@ from numpy.linalg import inv
 
 from numba import njit
 from numba_progress import ProgressBar
+from statsmodels.stats.moment_helpers import cov2corr
 
 from utils import *
 import argparse
@@ -32,7 +33,7 @@ sns.set()
 np.random.seed(42)
 
 from gmm import sim_gmm
-from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt
+from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -45,9 +46,16 @@ def parse_arguments():
     parser.add_argument('--pca', action='store_true')
     parser.add_argument('--k', type=int, default=1)
     parser.add_argument('--numfeats', type=int, default=10)
+    parser.add_argument('--simple', action='store_true')
+    parser.add_argument('--simple_anom', action='store_true')
+    parser.add_argument('--double', action='store_true')
+    parser.add_argument('--closer', action='store_true')
+    parser.add_argument('--normalize', action='store_true')
+    parser.add_argument('--negate', action='store_true')
 
     args = parser.parse_args()
-
+    if not args.closer:
+        args.closer = False
     return args
 
 def resolve_data(args):
@@ -76,7 +84,9 @@ def resolve_data(args):
 class BoostMetric:
     def __init__(self, data, labels, v, J, init_dist_mat, args, keep_top_k=False, top_k=3):
         self.data = data
+        self.original_data = data.copy()
         self.labels = labels
+        self.original_labels = labels.copy()
         self.v = v
         self.J = J
         # self.triplet_idxs = convert_to_triples(data, labels)
@@ -92,6 +102,7 @@ class BoostMetric:
         # self.keep_top_k = keep_top_k
         self.top_k = top_k
         self.args = args
+        self.init_dist_mat = init_dist_mat
 
     def iterate(self):
         w_s = []
@@ -114,81 +125,157 @@ class BoostMetric:
             # curr_Z = max_vec @ max_vec.T
 
             # USER FEEDBACK
-            dists, curr_Z, curr_triplet = self.replicate_user_feedback(args=self.args, itr=j)
-            met_count = self.calc_sigma_metric(dists=dists)
-            if not is_symmetric(curr_Z):
-                curr_Z = (curr_Z + curr_Z.T)/2
-            self.triplets.append(curr_triplet)
-            self.u_r_arr.append(1.0/(len(self.u_r_arr)+1))
+            if self.args.double:
+                dists, curr_Z_anom, curr_Z_nom, curr_triplet, second_triplet = self.replicate_user_feedback_double(args=self.args, itr=j, closer=self.args.closer, negate=self.args.negate)
+                if not is_symmetric(curr_Z_anom):
+                    curr_Z_anom = (curr_Z_anom + curr_Z_anom.T)/2
+                if not is_symmetric(curr_Z_nom):
+                    curr_Z_nom = (curr_Z_nom + curr_Z_nom.T)/2
+                self.triplets.append(curr_triplet)
+                self.triplets.append(second_triplet)
+                if len(self.u_r_arr) >= 1:
+                    # append twice for two triplets
+                    self.u_r_arr.append(np.array(self.u_r_arr).sum()/(len(self.u_r_arr)+1))
+                    self.u_r_arr.append(np.array(self.u_r_arr).sum()/(len(self.u_r_arr)+1))
+                else:
+                    # append twice for two triplets
+                    self.u_r_arr.append(1.0)
+                    self.u_r_arr.append(1.0)
+                # normalize u
+                self.u_r = np.array(self.u_r_arr)
+                self.u_r = self.u_r/self.u_r.sum()
+                self.u_r_arr = self.u_r.tolist()
+                A_arr = calculate_AR(self.triplets)
+                H_s_anom = self.calc_H_r_js(curr_Z=curr_Z_anom, A_arr=A_arr)
+                H_s_nom = self.calc_H_r_js(curr_Z=curr_Z_nom, A_arr=A_arr)
+                w_j_anom = self.bisection_search(curr_Z_anom, H_s_anom)
+                w_j_nom = self.bisection_search(curr_Z_nom, H_s_nom)
+                if self.args.negate:
+                    w_j_nom = self.bisection_search_posdef(curr_Z=curr_Z_nom, curr_dist_mat=self.curr_dist_mat, w_l=0.0, w_u=w_j_nom)
+                # update u twice for two triplets
+                new_u = []
+                for r in range(self.u_r.shape[0]):
+                    u_r_new = self.u_r[r]*np.exp(-H_s_anom[r]*w_j_anom)
+                    new_u.append(u_r_new)
+                new_u = np.array(new_u)
+                new_u = new_u / new_u.sum()
+                self.u_r = new_u
+                self.u_r_arr = self.u_r.tolist()
+                new_u = []
+                for r in range(self.u_r.shape[0]):
+                    u_r_new = self.u_r[r]*np.exp(-H_s_nom[r]*w_j_nom)
+                    new_u.append(u_r_new)
+                new_u = np.array(new_u)
+                new_u = new_u / new_u.sum()
+                self.u_r = new_u
+                self.u_r_arr = self.u_r.tolist()
+                w_s.append(w_j_anom)
+                w_s.append(w_j_nom)
+                Z_s.append(curr_Z_anom)
+                Z_s.append(curr_Z_nom)
+                self.curr_dist_mat += w_j_anom*curr_Z_anom 
+                if self.args.negate and self.args.closer:
+                    print("Subtracting...")
+                    self.curr_dist_mat -= w_j_nom*curr_Z_nom
+                else:
+                    self.curr_dist_mat += w_j_nom*curr_Z_nom
+                if self.args.normalize:
+                    print("Normalizing...")
+                    self.curr_dist_mat = cov2corr(self.curr_dist_mat)
+            else:
+                if self.args.simple:
+                    dists, curr_Z, curr_triplet = self.replicate_user_feedback_simplified(args=self.args, itr=j, closer=self.args.closer)
+                    #dists, curr_Z, curr_triplet = self.replicate_user_feedback_simplified_anom(args=self.args, itr=j)
+                elif self.args.simple_anom:
+                    dists, curr_Z, curr_triplet = self.replicate_user_feedback_simplified_anom(args=self.args, itr=j)
+                else:
+                    dists, curr_Z, curr_triplet = self.replicate_user_feedback(args=self.args, itr=j)
+                met_count = self.calc_sigma_metric(dists=dists)
+                if not is_symmetric(curr_Z):
+                    curr_Z = (curr_Z + curr_Z.T)/2
+                self.triplets.append(curr_triplet)
+                #self.u_r_arr.append(1.0/(len(self.u_r_arr)+1))
+                if len(self.u_r_arr) >= 1:
+                    self.u_r_arr.append(np.array(self.u_r_arr).sum()/len(self.u_r_arr))
+                else:
+                    self.u_r_arr.append(1.0)
 
-            # normalize u
-            self.u_r = np.array(self.u_r_arr)
-            self.u_r = self.u_r/self.u_r.sum()
-            self.u_r_arr = self.u_r.tolist()
-            
-            # calculate A_r for all current triplets
-            A_arr = calculate_AR(self.triplets)
+                # normalize u
+                self.u_r = np.array(self.u_r_arr)
+                self.u_r = self.u_r/self.u_r.sum()
+                self.u_r_arr = self.u_r.tolist()
+                
+                # calculate A_r for all current triplets
+                A_arr = calculate_AR(self.triplets)
 
-            # calculate H_s (margins) for current user feedback
-            H_s = self.calc_H_r_js(curr_Z=curr_Z, A_arr=A_arr)
+                # calculate H_s (margins) for current user feedback
+                H_s = self.calc_H_r_js(curr_Z=curr_Z, A_arr=A_arr)
 
-            # calculate weight with bisection search
-            w_j = self.bisection_search(curr_Z, H_s)
+                # calculate weight with bisection search
+                w_j = self.bisection_search(curr_Z, H_s)
+                if self.args.negate:
+                    w_j = self.bisection_search_posdef(curr_Z=curr_Z, curr_dist_mat=self.curr_dist_mat, w_l=0.0, w_u=w_j)
 
-            #print("W_j {}".format(w_j))
-            sns.heatmap(curr_Z)
-            plt.savefig('figures/debugging_figs/Z_{}_{}.png'.format(self.args.data, j))
-            plt.close()          
-            
-            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # update u
-            # TODO
-            # FIX THIS SECTION
-            new_u = []
-            for r in range(self.u_r.shape[0]):
-                u_r_new = self.u_r[r]*np.exp(-H_s[r]*w_j)
-                #u_r_new = np.exp(-H_s[r]*w_j)
-                #print("U{} {}".format(r, u_r_new))
-                new_u.append(u_r_new)
-            new_u = np.array(new_u)
-            new_u = new_u / new_u.sum()
-            self.u_r = new_u
-            self.u_r_arr = self.u_r.tolist()
-           # print(self.u_r)
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # ------------------------------------------------------------ #
-            # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
+                #print("W_j {}".format(w_j))
+                sns.heatmap(curr_Z)
+                plt.savefig('figures/debugging_figs/Z_{}_{}.png'.format(self.args.data, j))
+                plt.close()          
+                
+                # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # update u
+                # TODO
+                # FIX THIS SECTION
+                new_u = []
+                for r in range(self.u_r.shape[0]):
+                    u_r_new = self.u_r[r]*np.exp(-H_s[r]*w_j)
+                    #u_r_new = np.exp(-H_s[r]*w_j)
+                    #print("U{} {}".format(r, u_r_new))
+                    new_u.append(u_r_new)
+                new_u = np.array(new_u)
+                new_u = new_u / new_u.sum()
+                self.u_r = new_u
+                self.u_r_arr = self.u_r.tolist()
+            # print(self.u_r)
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # ------------------------------------------------------------ #
+                # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
 
 
-            w_s.append(w_j)
-            #w_s.append(1.0)
-            Z_s.append(curr_Z)
-            #print("W_j", w_j)
-            #print("Z Shape", curr_Z.shape)
-            # exclusion of sigma inv
-            # if j == 0:
-            #     self.curr_dist_mat = np.array(w_s)[0]*np.array(Z_s)[0]
-            # else:
-            #     for i in range(len(w_s)):
-            #         self.curr_dist_mat += np.array(w_s)[i]*np.array(Z_s)[i]
+                w_s.append(w_j)
+                #w_s.append(1.0)
+                Z_s.append(curr_Z)
+                #print("W_j", w_j)
+                #print("Z Shape", curr_Z.shape)
+                # exclusion of sigma inv
+                # if j == 0:
+                #     self.curr_dist_mat = np.array(w_s)[0]*np.array(Z_s)[0]
+                # else:
+                #     for i in range(len(w_s)):
+                #         self.curr_dist_mat += np.array(w_s)[i]*np.array(Z_s)[i]
 
-            # no exclusion of sigma inv
-            for i in range(len(w_s)):
-                self.curr_dist_mat += np.array(w_s)[i]*np.array(Z_s)[i]
+                # no exclusion of sigma inv
+                self.curr_dist_mat += w_j*curr_Z
 
-            # margin calculations
-            #print("\nCurrent Margins...")
-            for i in range(len(A_arr)):
-                H_i = np.trace(A_arr[i] @ self.curr_dist_mat.T)
-                #print("   >",H_i)
+
+                if self.args.normalize:
+                    print("Normalizing...")
+                    self.curr_dist_mat = cov2corr(self.curr_dist_mat)
+                # for i in range(len(w_s)):
+                #     self.curr_dist_mat += np.array(w_s)[i]*np.array(Z_s)[i]
+
+                # margin calculations
+                #print("\nCurrent Margins...")
+                for i in range(len(A_arr)):
+                    H_i = np.trace(A_arr[i] @ self.curr_dist_mat.T)
+                    #print("   >",H_i)
 
             sns.heatmap(self.curr_dist_mat)
             plt.savefig('figures/debugging_figs/X_{}_{}.png'.format(self.args.data, j))
@@ -216,9 +303,18 @@ class BoostMetric:
         anom_dists = dists[self.labels == 0]
         nominal_dists = dists[self.labels == 1]
 
+        original_dists = []
+        orig_mu = np.mean(self.original_data, axis=0)
+        for i in range(self.original_data.shape[0]):
+            a_i = self.original_data[i, :]
+            curr_dist = mahalanobis(a_i, orig_mu, self.curr_dist_mat)
+            original_dists.append(curr_dist)
+        original_dists = np.array(original_dists)
+        original_anom_dists = original_dists[self.original_labels == 0]
+        original_nominal_dists = original_dists[self.original_labels == 1]
         # save histogram of distances
-        sns.histplot(anom_dists, alpha=0.5, label='anomalies', kde=True)
-        sns.histplot(nominal_dists, alpha=0.5, label='nominal', kde=True)
+        sns.histplot(original_anom_dists, alpha=0.5, label='anomalies', kde=True)
+        sns.histplot(original_nominal_dists, alpha=0.5, label='nominal', kde=True)
         plt.legend(loc='best')
         plt.xlabel('Distance to Mean')
         plt.tight_layout()
@@ -291,6 +387,284 @@ class BoostMetric:
         self.labels = np.delete(self.labels, [selected_anom_idx, selected_a1_idx, selected_a2_idx], axis=0)
         
         return np.delete(dists, [selected_anom_idx, selected_a1_idx, selected_a2_idx], axis=0), curr_Z, curr_triplet
+    
+    def replicate_user_feedback_simplified(self, args, itr=0, use_mahal=False, closer=True):
+        dists = []
+        mu = np.mean(self.data, axis=0)
+        for i in range(self.data.shape[0]):
+            a_i = self.data[i, :]
+            curr_dist = mahalanobis(a_i, mu, self.curr_dist_mat)
+            dists.append(curr_dist)
+        dists = np.array(dists)
+        anom_dists = dists[self.labels == 0]
+        nominal_dists = dists[self.labels == 1]
+
+        original_dists = []
+        orig_mu = np.mean(self.original_data, axis=0)
+        for i in range(self.original_data.shape[0]):
+            a_i = self.original_data[i, :]
+            curr_dist = mahalanobis(a_i, orig_mu, self.curr_dist_mat)
+            original_dists.append(curr_dist)
+        original_dists = np.array(original_dists)
+        original_anom_dists = original_dists[self.original_labels == 0]
+        original_nominal_dists = original_dists[self.original_labels == 1]
+        # save histogram of distances
+        sns.histplot(original_anom_dists, alpha=0.5, label='anomalies', kde=True)
+        sns.histplot(original_nominal_dists, alpha=0.5, label='nominal', kde=True)
+        plt.legend(loc='best')
+        plt.xlabel('Distance to Mean')
+        plt.tight_layout()
+        plt.savefig('./figures/debugging_figs/dist_hist_simpl_{}_{}'.format(args.data, itr))
+        plt.close()
+
+        anom_feats = self.data[self.labels == 0, :]
+        anom_dists_mean = np.mean(anom_dists)
+        nom_feats = self.data[self.labels == 1, :]
+        nom_dists_mean = np.mean(nominal_dists)
+        # choose nominal point closest to the mean
+        a_k_indx = np.argmin(np.abs(nominal_dists - nom_dists_mean))
+        selected_nom_idx = np.where(self.labels==1)[0][a_k_indx]
+        a_k = nom_feats[a_k_indx, :]
+        
+        # construct triplet
+        # get anomaly 
+        anom_indx = np.argmin(np.abs(anom_dists - anom_dists_mean))
+        selected_anom_idx = np.where(self.labels==0)[0][anom_indx]
+        #a_k_indx = np.argmin(anom_dists)
+        anom_point = anom_feats[anom_indx, :]
+        # calculate top_k most important features
+        if closer:
+            diff = a_k - mu
+            if use_mahal:
+                mahal_grad = self.curr_dist_mat @ diff
+            else:
+                mahal_grad = diff
+            u_vec = mahal_grad/np.linalg.norm(mahal_grad)        
+            coef_abs = np.abs(u_vec)
+            coef_topk_idx = np.argpartition(coef_abs, -self.top_k)[-self.top_k:]
+            random_vector = np.random.rand(len(u_vec))
+            z_vec = find_orthogonal_vector(random_vector, u_vec)
+            #z_vec = u_vec
+        else:
+            print("PUSHING ANOMALY AWAY")
+            diff = a_k - anom_point
+            if use_mahal:
+                mahal_grad = self.curr_dist_mat @ diff
+            else:
+                mahal_grad = diff
+            u_vec = mahal_grad/np.linalg.norm(mahal_grad)
+            z_vec = u_vec
+        # construct weak learner from vector of most important features
+        #z_vec = u_vec
+        z_vec = z_vec/(np.linalg.norm(z_vec) + 1e-12)
+        z_vec = np.expand_dims(z_vec, 1)
+        #print(z_vec)
+        curr_Z = z_vec@z_vec.T
+        a_1 = mu
+        a_2 = anom_point
+        curr_triplet = (a_k, a_1, a_2) # a_k is the nominal point, a_1 is the mean, a_2 is the anomaly point
+        #print("Dist a1->a2", mahalanobis(a_1, a_2, self.curr_dist_mat))
+        #print("Dist a1->ak", mahalanobis(a_1, a_k, self.curr_dist_mat))
+        #print("Dist a2->ak", mahalanobis(a_2, a_k, self.curr_dist_mat))
+
+        self.data = np.delete(self.data, [selected_nom_idx, selected_anom_idx], axis=0)
+        self.labels = np.delete(self.labels, [selected_nom_idx, selected_anom_idx], axis=0)
+        
+        return np.delete(dists, [selected_nom_idx, selected_anom_idx], axis=0), curr_Z, curr_triplet
+    
+    def replicate_user_feedback_double(self, args, itr=0, use_mahal=False, closer=True, negate=False):
+        dists = []
+        #mu = np.mean(self.data[np.where(self.labels==1)[0], :], axis=0)
+        mu = np.mean(self.data, axis=0)
+        for i in range(self.data.shape[0]):
+            a_i = self.data[i, :]
+            curr_dist = mahalanobis(a_i, mu, self.curr_dist_mat)
+            dists.append(curr_dist)
+        dists = np.array(dists)
+        anom_dists = dists[self.labels == 0]
+        nominal_dists = dists[self.labels == 1]
+
+        original_dists = []
+        orig_mu = np.mean(self.original_data, axis=0)
+        for i in range(self.original_data.shape[0]):
+            a_i = self.original_data[i, :]
+            curr_dist = mahalanobis(a_i, orig_mu, self.curr_dist_mat)
+            original_dists.append(curr_dist)
+        original_dists = np.array(original_dists)
+        original_anom_dists = original_dists[self.original_labels == 0]
+        original_nominal_dists = original_dists[self.original_labels == 1]
+        # save histogram of distances
+        sns.histplot(original_anom_dists, alpha=0.5, label='anomalies', kde=True)
+        sns.histplot(original_nominal_dists, alpha=0.5, label='nominal', kde=True)
+        plt.legend(loc='best')
+        plt.xlabel('Distance to Mean')
+        plt.tight_layout()
+        plt.savefig('./figures/debugging_figs/dist_hist_double_{}_{}'.format(args.data, itr))
+        plt.close()
+
+        anom_feats = self.data[self.labels == 0, :]
+        anom_dists_mean = np.mean(anom_dists)
+        nom_feats = self.data[self.labels == 1, :]
+        nom_dists_mean = np.mean(nominal_dists)
+        # choose nominal point closest to the mean of nominal distances
+        a_k_indx = np.argmin(np.abs(nominal_dists - nom_dists_mean))
+        selected_nom_idx = np.where(self.labels==1)[0][a_k_indx]
+        a_k = nom_feats[a_k_indx, :]
+        
+
+        # construct triplet
+        # get anomaly closest to the mean of anomaly distances
+        anom_indx = np.argmin(np.abs(anom_dists - anom_dists_mean))
+        selected_anom_idx = np.where(self.labels==0)[0][anom_indx]
+        #a_k_indx = np.argmin(anom_dists)
+        anom_point = anom_feats[anom_indx, :]
+
+        # anomaly section
+        diff = anom_point - mu
+        if use_mahal:
+            mahal_grad = self.curr_dist_mat @ diff
+        else:
+            mahal_grad = diff
+        u_vec = mahal_grad/np.linalg.norm(mahal_grad)
+        coef_abs = np.abs(u_vec)
+        coef_topk_idx = np.argpartition(coef_abs, -self.top_k)[-self.top_k:]
+
+        # construct weak learner from vector of most important features
+        # z_vec = np.zeros_like(u_vec)
+        # z_vec[coef_topk_idx] = u_vec[coef_topk_idx]
+        z_vec = u_vec
+        z_vec = z_vec/(np.linalg.norm(z_vec) + 1e-12)
+        z_vec = np.expand_dims(z_vec, 1)
+        curr_Z_anom = z_vec@z_vec.T
+
+        # nominal section
+        if closer:
+            diff = a_k - mu
+            if use_mahal:
+                mahal_grad = self.curr_dist_mat @ diff
+            else:
+                mahal_grad = diff
+            u_vec = mahal_grad/np.linalg.norm(mahal_grad)      
+            coef_abs = np.abs(u_vec)
+            coef_topk_idx = np.argpartition(coef_abs, -self.top_k)[-self.top_k:]
+            random_vector = np.random.rand(len(u_vec))
+            z_vec = find_orthogonal_vector(random_vector, u_vec)
+            if negate:
+                z_vec = u_vec
+        else:
+            print("PUSHING ANOMALY AWAY")
+            diff = a_k - anom_point
+            if use_mahal:
+                mahal_grad = self.curr_dist_mat @ diff
+            else:
+                mahal_grad = diff
+            u_vec = mahal_grad/np.linalg.norm(mahal_grad)
+            z_vec = u_vec
+
+        # construct weak learner from vector of most important features
+        # z_vec = np.zeros_like(u_vec)
+        # z_vec[coef_topk_idx] = u_vec[coef_topk_idx]
+        z_vec = z_vec/(np.linalg.norm(z_vec) + 1e-12)
+        z_vec = np.expand_dims(z_vec, 1)
+        #print(z_vec)
+        curr_Z_nom = z_vec@z_vec.T
+
+        a_1 = mu
+        a_2 = anom_point
+        # TODO - get another nominal point instead of using mean
+        # TODO - get another anomaly point instead of using mean? - set up positive pair of anomalies?
+
+        curr_triplet = (a_k, a_1, a_2) # a_k is the nominal point, a_1 is the mean, a_2 is the anomaly point
+        second_triplet = (a_1, a_k, a_2) # a_1 is the mean, a_k is the nominal point, a_2 is the anomaly point
+        #print("Dist a1->a2", mahalanobis(a_1, a_2, self.curr_dist_mat))
+        #print("Dist a1->ak", mahalanobis(a_1, a_k, self.curr_dist_mat))
+        #print("Dist a2->ak", mahalanobis(a_2, a_k, self.curr_dist_mat))
+
+        self.data = np.delete(self.data, [selected_nom_idx, selected_anom_idx], axis=0)
+        self.labels = np.delete(self.labels, [selected_nom_idx, selected_anom_idx], axis=0)
+        
+        return np.delete(dists, [selected_nom_idx, selected_anom_idx], axis=0), curr_Z_anom, curr_Z_nom, curr_triplet, second_triplet
+    
+    def replicate_user_feedback_simplified_anom(self, args, itr=0, use_mahal=False):
+        dists = []
+        mu = np.mean(self.data, axis=0)
+        for i in range(self.data.shape[0]):
+            a_i = self.data[i, :]
+            curr_dist = mahalanobis(a_i, mu, self.curr_dist_mat)
+            dists.append(curr_dist)
+        dists = np.array(dists)
+        anom_dists = dists[self.labels == 0]
+        nominal_dists = dists[self.labels == 1]
+
+        original_dists = []
+        orig_mu = np.mean(self.original_data, axis=0)
+        for i in range(self.original_data.shape[0]):
+            a_i = self.original_data[i, :]
+            curr_dist = mahalanobis(a_i, orig_mu, self.curr_dist_mat)
+            original_dists.append(curr_dist)
+        original_dists = np.array(original_dists)
+        original_anom_dists = original_dists[self.original_labels == 0]
+        original_nominal_dists = original_dists[self.original_labels == 1]
+        # save histogram of distances
+        sns.histplot(original_anom_dists, alpha=0.5, label='anomalies', kde=True)
+        sns.histplot(original_nominal_dists, alpha=0.5, label='nominal', kde=True)
+        plt.legend(loc='best')
+        plt.xlabel('Distance to Mean')
+        plt.tight_layout()
+        plt.savefig('./figures/debugging_figs/dist_hist_anom_{}_{}'.format(args.data, itr))
+        plt.close()
+
+        anom_feats = self.data[self.labels == 0, :]
+        anom_dists_mean = np.mean(anom_dists)
+        nom_feats = self.data[self.labels == 1, :]
+        nom_dists_mean = np.mean(nominal_dists)
+        # choose nominal point closest to the mean of nominal distances
+        a_k_indx = np.argmin(np.abs(nominal_dists - nom_dists_mean))
+        selected_nom_idx = np.where(self.labels==1)[0][a_k_indx]
+        a_k = nom_feats[a_k_indx, :]
+        
+
+        # construct triplet
+        # get anomaly closest to the mean of anomaly distances
+        anom_indx = np.argmin(np.abs(anom_dists - anom_dists_mean))
+        selected_anom_idx = np.where(self.labels==0)[0][anom_indx]
+        #a_k_indx = np.argmin(anom_dists)
+        anom_point = anom_feats[anom_indx, :]
+
+        # calculate top_k most important features
+        diff = anom_point - mu
+        if use_mahal:
+            mahal_grad = self.curr_dist_mat @ diff
+        else:
+            mahal_grad = diff
+        u_vec = mahal_grad/np.linalg.norm(mahal_grad)
+        coef_abs = np.abs(u_vec)
+        coef_topk_idx = np.argpartition(coef_abs, -self.top_k)[-self.top_k:]
+
+        # construct weak learner from vector of most important features
+        # z_vec = np.zeros_like(u_vec)
+        # z_vec[coef_topk_idx] = u_vec[coef_topk_idx]
+        z_vec = u_vec
+        z_vec = z_vec/(np.linalg.norm(z_vec) + 1e-12)
+        z_vec = np.expand_dims(z_vec, 1)
+        #print(z_vec)
+        curr_Z = z_vec@z_vec.T
+        a_1 = mu
+        a_2 = anom_point
+
+        # TODO - get another nominal point instead of using mean
+        # TODO - get another anomaly point instead of using mean? - set up positive pair of anomalies?
+
+        curr_triplet = (a_k, a_1, a_2) # a_k is the nominal point, a_1 is the mean, a_2 is the anomaly point
+        second_triplet = (a_1, a_k, a_2) # a_1 is the mean, a_k is the nominal point, a_2 is the anomaly point
+        #print("Dist a1->a2", mahalanobis(a_1, a_2, self.curr_dist_mat))
+        #print("Dist a1->ak", mahalanobis(a_1, a_k, self.curr_dist_mat))
+        #print("Dist a2->ak", mahalanobis(a_2, a_k, self.curr_dist_mat))
+
+        self.data = np.delete(self.data, [selected_nom_idx, selected_anom_idx], axis=0)
+        self.labels = np.delete(self.labels, [selected_nom_idx, selected_anom_idx], axis=0)
+        
+        return np.delete(dists, [selected_nom_idx, selected_anom_idx], axis=0), curr_Z, curr_triplet
 
 
     def calc_Ahat(self):
@@ -312,6 +686,18 @@ class BoostMetric:
             lhs = self.calc_lhs(H_s, w_j)
             #print(lhs)
             if lhs > 0:
+                w_l = w_j
+            else:
+                w_u = w_j
+        
+        return w_j
+    
+    def bisection_search_posdef(self, curr_Z, curr_dist_mat, w_l=1e-5, w_u=1.0, eps=1e-5):
+        w_j = 0.0
+        while w_u - w_l >= eps:
+            w_j = 0.5*(w_u + w_l)
+            proposed_dist_mat = curr_dist_mat - w_j*curr_Z
+            if is_pos_def(proposed_dist_mat):
                 w_l = w_j
             else:
                 w_u = w_j
@@ -415,11 +801,13 @@ def calculate_AR(triplets):
         
     return np.array(A_arr)
 
-def init_covar(data):
+def init_covar(data, normalize=False):
     A_t = np.cov(data.T)
     #A_t = np.corrcoef(data.T)
     A_t = A_t + 1e-5*np.eye(A_t.shape[0])
 
+    if normalize:
+        A_t = cov2corr(A_t)
     assert is_pos_def(A_t)
     return inv(A_t)
 
@@ -446,6 +834,31 @@ def mahal_all_points(features, X):
     
     return np.array(dist_mat)
 
+def find_orthogonal_vector(v, reference):
+    """Find an orthogonal vector to the given vector v using the reference vector."""
+    v_orthogonal = v - (np.dot(v, reference) / np.dot(reference, reference)) * reference
+    return v_orthogonal
+
+def mahalanobis_distance_matrix_vectorized(features, X):
+    """
+    Vectorized computation of the Mahalanobis distance matrix.
+
+    Parameters:
+    - X: An (N, d) matrix where each row is a data point.
+    - S_inv: The precomputed inverse covariance matrix (d, d).
+
+    Returns:
+    - D_M: An (N, N) Mahalanobis distance matrix.
+    """
+    # Compute all pairwise differences
+    delta = features[:, None, :] - features[None, :, :]  # Shape (N, N, d)
+    
+    # Compute the quadratic form for each pair
+    dist_sq = np.einsum('ijk,kl,ijl->ij', delta, X, delta)  # (N, N)
+    
+    # Take the square root to get distances
+    return np.sqrt(dist_sq)
+
 def final_classification(features, labels, X):
     dists = []
     chisq_vals = []
@@ -471,6 +884,34 @@ def final_classification(features, labels, X):
     print("Number Predicted Anomalies {}".format(preds_chisq.sum()))
 
     return cf1, cprec, crec, preds_chisq.sum()
+
+def predict_percentile(args, features, X, labels, percentile=95, dist='mahalanobis'):
+    mu = np.mean(features, axis=0)
+    dists = []
+    for i in range(features.shape[0]):
+        a_i = features[i, :]
+        if dist == 'mahalanobis':
+            curr_dist = mahalanobis(a_i, mu, X)
+        elif dist == 'euclidean':
+            curr_dist = np.linalg.norm(a_i - mu)
+        else:
+            raise ValueError("Invalid Distance Metric")
+        dists.append(curr_dist)
+    dists = np.array(dists)
+    anom_dists = dists[labels == 0]
+    nominal_dists = dists[labels == 1]
+    threshold = np.percentile(dists, percentile)
+    preds = (dists > threshold).astype(int)
+    preds = 1-preds # zero is anomaly
+    print("Threshold {} Dist {} Total {}".format(threshold, dist, (1-preds).sum()))
+    sns.histplot(anom_dists, alpha=0.5, label='anomalies', kde=True)
+    sns.histplot(nominal_dists, alpha=0.5, label='nominal', kde=True)
+    plt.legend(loc='best')
+    plt.xlabel('Distance to Mean')
+    plt.tight_layout()
+    plt.savefig('./figures/debugging_figs/dist_hist_{}_{}_{}'.format("FINAL", dist, args.data))
+    plt.close()
+    return preds
 
 def fast_kernel(X1, X2):
     return pairwise_distances(X1, X2, metric=lambda x, y: np.dot(x, y))
@@ -501,12 +942,18 @@ if __name__ == "__main__":
     if args.data != 'wine':
         #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
         features = add_epsilon_noise(features=features)
+        if args.data == 'bank':
+            labels = 1-labels # switch 0 and 1
     else:
         labels[labels != 0] = 1
 
     features = scaler.fit_transform(features)
     # randomly select 10000 samples from features
-    features_subset = shuffle(features, random_state=42)[:10000]
+    labels_svm = labels.copy()
+    labels_svm[labels_svm == 0] = -1
+    features_subset, labels_subset = shuffle(features, labels_svm, random_state=42)
+    features_subset = features_subset[:10000]
+    labels_subset = labels_subset[:10000]
     ####################
     # svm_boost = OCSVMBoost(data=features_subset, m=30)
     # hypotheses, lg_mults = svm_boost.fit()
@@ -522,64 +969,80 @@ if __name__ == "__main__":
     # svm_boost_preds[svm_boost_preds == 1] = 0 # nominals
     # svm_boost_preds[svm_boost_preds == -1] = 1 # outliers
     # print(svm_boost_preds.shape)
+
+
     #####################
-    print("Fitting OC-SVM {}".format(features_subset.shape))
-    clf = OneClassSVM(kernel='linear', nu=0.1, shrinking=False)
-    clf.fit(features_subset)
-    print("Predicting OC-SVM")
-    svm_preds = clf.predict(features)
-    svm_preds[svm_preds == 1] = 0  # nominals
-    svm_preds[svm_preds == -1] = 1 # outliers
-    #print(-clf.intercept_[0] / (clf.nu * len(features)))
-    #print(clf.dual_coef_.ravel() / (clf.nu * len(features)))
+    # print("Fitting OC-SVM {}".format(features_subset.shape))
+    # clf = OneClassSVM(kernel='linear', nu=0.1, shrinking=False)
+    # clf.fit(features_subset)
+    # print("Predicting OC-SVM")
+    # svm_preds = clf.predict(features)
+    # svm_preds[svm_preds == 1] = 0  # nominals
+    # svm_preds[svm_preds == -1] = 1 # outliers
+    # #print(-clf.intercept_[0] / (clf.nu * len(features)))
+    # #print(clf.dual_coef_.ravel() / (clf.nu * len(features)))
 
-    clf = OCSVMCVXPrimal(data=features_subset, v=0.1)
-    w_primal, rho_primal, xi_primal = clf.solve()
-    #print(rho_primal)
-    #print("W Primal {}".format(w_primal))
-    #print("Rho Primal {}".format(rho_primal))
-    #print("Xi Primal {}".format(xi_primal))
-    svm_preds_primal = clf.predict(features)
-    svm_preds_primal[svm_preds_primal == 1] = 0  # nominals
-    svm_preds_primal[svm_preds_primal == -1] = 1 # outliers
-    # repeat for the dual
-    clf = OCSVMCVXDual(data=features_subset, v=0.1)
-    alpha_dual = clf.solve()
-    #print("Alpha Dual {}".format(alpha_dual))
-    svm_preds_dual = clf.predict(features)
-    svm_preds_dual[svm_preds_dual == 1] = 0  # nominals
-    svm_preds_dual[svm_preds_dual == -1] = 1 # outliers
-    #print(clf.alpha.value)
+    # clf = OCSVMCVXPrimal(data=features_subset, v=0.2)
+    # w_primal, rho_primal, xi_primal = clf.solve()
+    # #print(rho_primal)
+    # #print("W Primal {}".format(w_primal))
+    # #print("Rho Primal {}".format(rho_primal))
+    # #print("Xi Primal {}".format(xi_primal))
+    # svm_preds_primal = clf.predict(features)
+    # svm_preds_primal[svm_preds_primal == 1] = 0  # nominals
+    # svm_preds_primal[svm_preds_primal == -1] = 1 # outliers
+    # # repeat for the dual
+    # clf = OCSVMCVXDual(data=features_subset, v=0.2)
+    # alpha_dual = clf.solve()
+    # #print("Alpha Dual {}".format(alpha_dual))
+    # svm_preds_dual = clf.predict(features)
+    # svm_preds_dual[svm_preds_dual == 1] = 0  # nominals
+    # svm_preds_dual[svm_preds_dual == -1] = 1 # outliers
+    # #print(clf.alpha.value)
 
-    clf_rad = OCSVMCVXPrimalRad(data=features_subset, v=0.1)
-    center_rad, radius_rad, xi_rad = clf_rad.solve()
-    #print(center_rad, radius_rad)
-    svm_preds_rad = clf_rad.predict(features)
-    svm_preds_rad[svm_preds_rad == 1] = 0  # nominals
-    svm_preds_rad[svm_preds_rad == -1] = 1 # outliers
+    # clf_rad = OCSVMCVXPrimalRad(data=features_subset, v=0.1)
+    # center_rad, radius_rad, xi_rad = clf_rad.solve()
+    # #print(center_rad, radius_rad)
+    # svm_preds_rad = clf_rad.predict(features)
+    # svm_preds_rad[svm_preds_rad == 1] = 0  # nominals
+    # svm_preds_rad[svm_preds_rad == -1] = 1 # outliers
 
-    clf = OCSVMCVXDualRad(data=features_subset, v=0.1)
-    alpha_rad = clf.solve()
-    svm_preds_rad_dual = clf.predict(features)
-    svm_preds_rad_dual[svm_preds_rad_dual == 1] = 0  # nominals
-    svm_preds_rad_dual[svm_preds_rad_dual == -1] = 1 # outliers
+    # clf = OCSVMCVXDualRad(data=features_subset, v=0.2)
+    # alpha_rad = clf.solve()
+    # svm_preds_rad_dual = clf.predict(features)
+    # svm_preds_rad_dual[svm_preds_rad_dual == 1] = 0  # nominals
+    # svm_preds_rad_dual[svm_preds_rad_dual == -1] = 1 # outliers
 
-    clf_rad_alt = OCSVMRadAlt(v=0.1, n_features=features_subset.shape[1])
-    ret_dict_rad = clf_rad_alt.fit(features_subset)
-    svm_preds_rad_alt = clf_rad_alt.predict(features)
-    svm_preds_rad_alt[svm_preds_rad_alt == 1] = 0  # nominals
-    svm_preds_rad_alt[svm_preds_rad_alt == -1] = 1 # outliers
+    # clf_rad_alt = OCSVMRadAlt(v=0.1, n_features=features_subset.shape[1])
+    # ret_dict_rad = clf_rad_alt.fit(features_subset)
+    # svm_preds_rad_alt = clf_rad_alt.predict(features)
+    # svm_preds_rad_alt[svm_preds_rad_alt == 1] = 0  # nominals
+    # svm_preds_rad_alt[svm_preds_rad_alt == -1] = 1 # outliers
+
+    # clf_primal_min = OCSVMCVXPrimalMinimization(nu=0.3)
+    # clf_primal_min.fit(features_subset)
+    # svm_preds_primal_min = clf_primal_min.predict(features)
+    # svm_preds_primal_min[svm_preds_primal_min == 1] = 0  # nominals
+    # svm_preds_primal_min[svm_preds_primal_min == -1] = 1 # outliers
+
+    # clf_primal_mix = OCSVMMix(v=0.2, kernel_approx=True, gamma=0.2, n_features=200)
+    # clf_primal_mix.fit(features_subset, labels_subset)
+    # svm_preds_primal_mix = clf_primal_mix.predict(features)
+    # svm_preds_primal_mix[svm_preds_primal_mix == 1] = 0  # nominals
+    # svm_preds_primal_mix[svm_preds_primal_mix == -1] = 1 # outliers
 
 
 
-    mu_support, idx_support = ocsvm_solver(K=np.dot(features_subset, features_subset.T), nu=0.1)
-    calc_rho = compute_rho(K=np.dot(features_subset, features_subset.T), mu_support=mu_support, idx_support=idx_support)
-    X_support = features_subset[idx_support]
-    G = np.dot(features, X_support.T)
-    decision = G.dot(mu_support) - calc_rho
-    svm_preds_cvxopt = np.sign(decision)
-    svm_preds_cvxopt[svm_preds_cvxopt == 1] = 0  # nominals
-    svm_preds_cvxopt[svm_preds_cvxopt == -1] = 1 # outliers
+    # mu_support, idx_support = ocsvm_solver(K=np.dot(features_subset, features_subset.T), nu=0.1)
+    # calc_rho = compute_rho(K=np.dot(features_subset, features_subset.T), mu_support=mu_support, idx_support=idx_support)
+    # X_support = features_subset[idx_support]
+    # G = np.dot(features, X_support.T)
+    # decision = G.dot(mu_support) - calc_rho
+    # svm_preds_cvxopt = np.sign(decision)
+    # svm_preds_cvxopt[svm_preds_cvxopt == 1] = 0  # nominals
+    # svm_preds_cvxopt[svm_preds_cvxopt == -1] = 1 # outliers
+
+    ##############################
     # iterate over a few points and give the true labels to the dual
     # we do this by selecting the top 10 closest points to the decision boundary that are incorrectly classified
     # and then we give the true labels to the dual
@@ -587,31 +1050,58 @@ if __name__ == "__main__":
     # select the top 10 closest points to the decision boundary that are incorrectly classified
 
     ####################
-    incorrect_points = (svm_preds_rad != 1-labels)
-    incorrect_points_idx = np.where(incorrect_points)[0]
-    decision_func_rad = clf.decision_function(features)
-    smallest_k_idx = np.argpartition(np.abs(decision_func_rad[incorrect_points_idx]), 10)[:10]
-    original_idx = incorrect_points_idx[smallest_k_idx]
-    print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
-    print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
-    for j, idx in enumerate(original_idx):
-        print(">> Iteration {} <<".format(j))
-        curr_label = 1-labels[idx]
-        if curr_label == 0: # nominal
-            center_rad, radius_rad, xi_rad = clf_rad.add_hard_constraint(idx, 1)
-        else:
-            center_rad, radius_rad, xi_rad = clf_rad.add_hard_constraint(idx, -1)
-        svm_preds_rad = clf_rad.predict(features)
-        svm_preds_rad[svm_preds_rad == 1] = 0  # nominals
-        svm_preds_rad[svm_preds_rad == -1] = 1 # outliers
-        # print the ratio of anomalies
-        print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
-        # print the accuracy, f1, precision, recall
-        print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
-        print(">>>>>>>>><<<<<<<<<")
+    # incorrect_points = (svm_preds_primal_mix != 1-labels)
+    # incorrect_points_idx = np.where(incorrect_points)[0]
+    # decision_func_mix = clf_primal_mix.decision_function(features)
+    # smallest_k_idx = np.argpartition(np.abs(decision_func_mix[incorrect_points_idx]), 10)[:10]
+    # original_idx = incorrect_points_idx[smallest_k_idx]
+    # print("Mix Ratio: ", svm_preds_primal_mix.sum()/svm_preds_primal_mix.shape[0])
+    # print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
+    # for j, idx in enumerate(original_idx):
+    #     print(">> Iteration {} <<".format(j))
+    #     print("True Label {}".format(1-labels[idx]))
+    #     print("Index {}".format(idx))
+    #     clf_primal_mix.add_labeled_example(idx)
+    #     svm_preds_primal_mix = clf_primal_mix.predict(features)
+    #     svm_preds_primal_mix[svm_preds_primal_mix == 1] = 0  # nominals
+    #     svm_preds_primal_mix[svm_preds_primal_mix == -1] = 1 # outliers
+    #     # print the ratio of anomalies
+    #     print("Mix Ratio: ", svm_preds_primal_mix.sum()/svm_preds_primal_mix.shape[0])
+    #     # print the accuracy, f1, precision, recall
+    #     print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
+    #     print(">>>>>>>>><<<<<<<<<")
 
-        # check incorrect points again and see if classified correctly
-        print((svm_preds_rad[idx] == (1-labels)[idx]))
+    #     # check incorrect points again and see if classified correctly
+    #     print((svm_preds_primal_mix[idx] == (1-labels)[idx]))
+
+    ################
+
+    ####################
+    # incorrect_points = (svm_preds_rad != 1-labels)
+    # incorrect_points_idx = np.where(incorrect_points)[0]
+    # decision_func_rad = clf_rad.decision_function(features)
+    # smallest_k_idx = np.argpartition(np.abs(decision_func_rad[incorrect_points_idx]), 10)[:10]
+    # original_idx = incorrect_points_idx[smallest_k_idx]
+    # print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
+    # print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
+    # for j, idx in enumerate(original_idx):
+    #     print(">> Iteration {} <<".format(j))
+    #     curr_label = 1-labels[idx]
+    #     if curr_label == 0: # nominal
+    #         center_rad, radius_rad, xi_rad = clf_rad.add_hard_constraint(idx, 1)
+    #     else:
+    #         center_rad, radius_rad, xi_rad = clf_rad.add_hard_constraint(idx, -1)
+    #     svm_preds_rad = clf_rad.predict(features)
+    #     svm_preds_rad[svm_preds_rad == 1] = 0  # nominals
+    #     svm_preds_rad[svm_preds_rad == -1] = 1 # outliers
+    #     # print the ratio of anomalies
+    #     print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
+    #     # print the accuracy, f1, precision, recall
+    #     print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
+    #     print(">>>>>>>>><<<<<<<<<")
+
+    #     # check incorrect points again and see if classified correctly
+    #     print((svm_preds_rad[idx] == (1-labels)[idx]))
 
     ################
 
@@ -649,13 +1139,16 @@ if __name__ == "__main__":
 
     # print(svm_preds_primal)
     # print(svm_preds_dual)
-    print("SKLearn Ratio: ", svm_preds.sum()/svm_preds.shape[0])
-    print("Primal Ratio: ", svm_preds_primal.sum()/svm_preds_primal.shape[0])
-    print("Dual Ratio: ", svm_preds_dual.sum()/svm_preds_dual.shape[0])
-    print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
-    print("Radial Dual Ratio: ", svm_preds_rad_dual.sum()/svm_preds_rad_dual.shape[0])
-    print("CVXOPT Ratio: ", svm_preds_cvxopt.sum()/svm_preds_cvxopt.shape[0])
-    print("Radial Alt Ratio: ", svm_preds_rad_alt.sum()/svm_preds_rad_alt.shape[0])
+    ########
+    # print("SKLearn Ratio: ", svm_preds.sum()/svm_preds.shape[0])
+    # print("Primal Ratio: ", svm_preds_primal.sum()/svm_preds_primal.shape[0])
+    # print("Dual Ratio: ", svm_preds_dual.sum()/svm_preds_dual.shape[0])
+    # print("Radial Ratio: ", svm_preds_rad.sum()/svm_preds_rad.shape[0])
+    # print("Radial Dual Ratio: ", svm_preds_rad_dual.sum()/svm_preds_rad_dual.shape[0])
+    # print("CVXOPT Ratio: ", svm_preds_cvxopt.sum()/svm_preds_cvxopt.shape[0])
+    # print("Radial Alt Ratio: ", svm_preds_rad_alt.sum()/svm_preds_rad_alt.shape[0])
+    # print("Primal Min Ratio: ", svm_preds_primal_min.sum()/svm_preds_primal_min.shape[0])
+    # print("Primal Mix Ratio: ", svm_preds_primal_mix.sum()/svm_preds_primal_mix.shape[0])
 
 
 
@@ -672,41 +1165,79 @@ if __name__ == "__main__":
     # naive_preds = clf_naive.predict(features)
     # naive_preds[naive_preds == 1] = 0  # nominals
     # naive_preds[naive_preds == -1] = 1 # outliers
-    # init_dist_mat = init_covar(features)
-    # print("Data {} Shape {}".format(args.data, features.shape))
 
-    # bm = BoostMetric(data=features, labels=labels, init_dist_mat=init_dist_mat, args=args, v=args.v, J=args.iters, top_k=args.k)
-    # X = bm.iterate()
-    # plt.plot(np.arange(args.iters), bm.f1s, label="F1")
-    # plt.plot(np.arange(args.iters), bm.precisions, label='Precision')
-    # plt.plot(np.arange(args.iters), bm.recalls, label='Recall')
-    # plt.xlabel("Iterations")
-    # plt.ylabel("Scores")
-    # plt.legend(loc='best')
-    # plt.title("Scores {}".format(args.data))
-    # plt.savefig('figures/debugging_figs/scores_{}'.format(args.data))
-    # plt.close()
+    init_dist_mat = init_covar(features, normalize=args.normalize)
+    print("Data {} Shape {}".format(args.data, features.shape))
 
-    # plt.plot(np.arange(args.iters), bm.num_preds)
-    # plt.xlabel("Iterations")
-    # plt.ylabel("Number of Predicted Anomalies (ChiSq)")
-    # #plt.legend(loc='best')
-    # plt.title("Number Predicted {}".format(args.data))
-    # plt.savefig('figures/debugging_figs/numpreds_{}'.format(args.data))
-    # plt.close()
+    bm = BoostMetric(data=features, labels=labels, init_dist_mat=init_dist_mat, args=args, v=args.v, J=args.iters, top_k=args.k)
+    X = bm.iterate()
+    w, Z = bm.get_w_Z()
+    print("Length of w {}".format(len(w)))
+    plt.plot(np.arange(args.iters), bm.f1s, label="F1")
+    plt.plot(np.arange(args.iters), bm.precisions, label='Precision')
+    plt.plot(np.arange(args.iters), bm.recalls, label='Recall')
+    plt.xlabel("Iterations")
+    plt.ylabel("Scores")
+    plt.legend(loc='best')
+    plt.title("Scores {}".format(args.data))
+    plt.savefig('figures/debugging_figs/scores_{}'.format(args.data))
+    plt.close()
+
+    plt.plot(np.arange(args.iters), bm.num_preds)
+    plt.xlabel("Iterations")
+    plt.ylabel("Number of Predicted Anomalies (ChiSq)")
+    #plt.legend(loc='best')
+    plt.title("Number Predicted {}".format(args.data))
+    plt.savefig('figures/debugging_figs/numpreds_{}'.format(args.data))
+    plt.close()
     ###############
     
-    print("\nSVM: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds), f1_score(1-labels, svm_preds), precision_score(1-labels, svm_preds), recall_score(1-labels, svm_preds)))
-    print("SVM Primal: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal), f1_score(1-labels, svm_preds_primal), precision_score(1-labels, svm_preds_primal), recall_score(1-labels, svm_preds_primal)))
-    print("SVM Dual: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_dual), f1_score(1-labels, svm_preds_dual), precision_score(1-labels, svm_preds_dual), recall_score(1-labels, svm_preds_dual)))
-    print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
-    print("SVM Radial Dual: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad_dual), f1_score(1-labels, svm_preds_rad_dual), precision_score(1-labels, svm_preds_rad_dual), recall_score(1-labels, svm_preds_rad_dual)))
-    print("SVM CVXOPT: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_cvxopt), f1_score(1-labels, svm_preds_cvxopt), precision_score(1-labels, svm_preds_cvxopt), recall_score(1-labels, svm_preds_cvxopt)))
-    print("SVM Radial Alt: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad_alt), f1_score(1-labels, svm_preds_rad_alt), precision_score(1-labels, svm_preds_rad_alt), recall_score(1-labels, svm_preds_rad_alt)))
+    # print("\nSVM: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds), f1_score(1-labels, svm_preds), precision_score(1-labels, svm_preds), recall_score(1-labels, svm_preds)))
+    # print("SVM Primal: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal), f1_score(1-labels, svm_preds_primal), precision_score(1-labels, svm_preds_primal), recall_score(1-labels, svm_preds_primal)))
+    # print("SVM Dual: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_dual), f1_score(1-labels, svm_preds_dual), precision_score(1-labels, svm_preds_dual), recall_score(1-labels, svm_preds_dual)))
+    # print("SVM Radial: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad), f1_score(1-labels, svm_preds_rad), precision_score(1-labels, svm_preds_rad), recall_score(1-labels, svm_preds_rad)))
+    # print("SVM Radial Dual: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad_dual), f1_score(1-labels, svm_preds_rad_dual), precision_score(1-labels, svm_preds_rad_dual), recall_score(1-labels, svm_preds_rad_dual)))
+    # print("SVM CVXOPT: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_cvxopt), f1_score(1-labels, svm_preds_cvxopt), precision_score(1-labels, svm_preds_cvxopt), recall_score(1-labels, svm_preds_cvxopt)))
+    # print("SVM Radial Alt: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_rad_alt), f1_score(1-labels, svm_preds_rad_alt), precision_score(1-labels, svm_preds_rad_alt), recall_score(1-labels, svm_preds_rad_alt)))
+    # print("SVM Primal Min: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_min), f1_score(1-labels, svm_preds_primal_min), precision_score(1-labels, svm_preds_primal_min), recall_score(1-labels, svm_preds_primal_min)))
+    # print("SVM Primal Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
     #########
     #print("SVM Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, svm_boost_preds), precision_score(1-labels, svm_boost_preds), recall_score(1-labels, svm_boost_preds)))
     #print("SVM Naive Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, naive_preds), precision_score(1-labels, naive_preds), recall_score(1-labels, naive_preds)))
-    #print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
+    print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
+    #total_distances = mahal_all_points(features, X)
+    #knn_clf = KNeighborsClassifier(n_neighbors=3, metric='precomputed')
+    #knn_clf.fit(total_distances, labels)
+    #knn_preds = knn_clf.predict(total_distances)
+    #print("KNN: F1 {}, Precision {}, Recall {}".format(f1_score(labels, knn_preds), precision_score(labels, knn_preds), recall_score(labels, knn_preds)))
+    #knn_clf_euclidean = KNeighborsClassifier(n_neighbors=3, metric='euclidean')
+    #knn_clf_euclidean.fit(features, labels)
+    #knn_preds_euclidean = knn_clf_euclidean.predict(features)
+    #print("KNN Euclidean: F1 {}, Precision {}, Recall {}".format(f1_score(labels, knn_preds_euclidean), precision_score(labels, knn_preds_euclidean), recall_score(labels, knn_preds_euclidean)))
+    preds_mahal_percentile = predict_percentile(args, features, X, labels=labels, percentile=95, dist='mahalanobis')
+    print("Mahal Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_percentile), precision_score(1-labels, 1-preds_mahal_percentile), recall_score(1-labels, 1-preds_mahal_percentile)))
+    preds_euclidean_percentile = predict_percentile(args, features, X=None, labels=labels, percentile=95, dist='euclidean')
+    print("Euclidean Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_euclidean_percentile), precision_score(1-labels, 1-preds_euclidean_percentile), recall_score(1-labels, 1-preds_euclidean_percentile)))
+
+    dists = []
+    mu = np.mean(features, axis=0)
+    for i in range(features.shape[0]):
+        a_i = features[i, :]
+        curr_dist = np.linalg.norm(a_i - mu)
+        dists.append(curr_dist)
+    dists = np.array(dists)
+    anom_dists = dists[labels == 0]
+    nominal_dists = dists[labels == 1]
+
+    # save histogram of distances
+    sns.histplot(anom_dists, alpha=0.5, label='anomalies', kde=True)
+    sns.histplot(nominal_dists, alpha=0.5, label='nominal', kde=True)
+    plt.legend(loc='best')
+    plt.xlabel('Distance to Mean')
+    plt.tight_layout()
+    plt.savefig('./figures/debugging_figs/dist_hist_euclid_{}'.format(args.data))
+    plt.close()
+
     ##########
 
     #final_classification(features=features, labels=labels, X=X)

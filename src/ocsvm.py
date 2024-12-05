@@ -7,6 +7,107 @@ from sklearn.utils import resample
 import cvxpy as cp
 import cvxopt
 
+class OCSVMMix:
+    def __init__(self, v=0.1, kernel_approx=False, gamma=0.5, n_features=100):
+        self.v = v
+        self.w = None
+        self.rho = None
+        self.xi = None
+        self.C = None
+        self.labeled_indices = []
+        self.kernel_approx = kernel_approx
+        self.n_features_approx = n_features
+        if kernel_approx:
+            self.kernel_function = RBFKernelApproximation(gamma=gamma, n_features=n_features)
+
+    def fit(self, X, y):
+        self.data = X
+        self.y = y
+        n_samples, n_features = X.shape
+        self.n = n_samples
+        if self.kernel_approx:
+            self.w = cp.Variable(self.n_features_approx)
+        else:
+            self.w = cp.Variable(n_features)
+        self.rho = cp.Variable()
+        self.xi = cp.Variable(n_samples, nonneg=True)
+        self.C = cp.Parameter(nonneg=True)
+
+        # Define the objective function
+        objective = cp.Maximize(self.rho - (1 / (self.v * self.n)) * cp.sum(self.xi))
+
+        # Define the constraints
+        if not self.kernel_approx:
+            constraints = [
+                self.w @ X[i, :] >= self.rho - self.xi[i] for i in range(self.n)  # w * x_i >= rho - xi_i for each i
+            ]
+        else:
+            self.X_transformed = self.kernel_function.fit_transform(X)
+            constraints = [
+                self.w @ self.X_transformed[i, :] >= self.rho - self.xi[i] for i in range(self.n)  # w * x_i >= rho - xi_i for each i
+            ]
+        constraints += [cp.norm(self.w) <= 1, cp.sum(self.w) == 1, self.w >= 0]
+
+        # Solve the problem
+        problem = cp.Problem(objective, constraints)
+        problem.solve()
+
+    def decision_function(self, X):
+        if self.kernel_approx:
+            X = self.kernel_function.transform(X)
+        return np.dot(X, self.w.value) - self.rho.value
+    
+    def predict(self, X):
+        return np.sign(self.decision_function(X))
+    
+    def add_labeled_example(self, indx):
+        """
+        Add a labeled example to the model.
+
+        Parameters:
+        x: ndarray of shape (n_features,), new labeled example
+        label: int, 1 for inlier and -1 for outlier
+        """
+        # if label not in [1, -1]:
+        #     raise ValueError("Label must be 1 (inlier) or -1 (outlier).")
+        self.labeled_indices.append(indx)
+        #self.labels.append(label)
+
+        # Update the constraints
+        self.C.value = 2.0
+        n_unlabeled = self.n - len(self.labeled_indices)
+        n_labeled = len(self.labeled_indices)
+        self.xi_labeled = cp.Variable(n_labeled, nonneg=True)
+        self.xi_unlabeled = cp.Variable(n_unlabeled, nonneg=True)
+        X_labeled = self.data[self.labeled_indices, :]
+        X_unlabeled = np.delete(self.data, self.labeled_indices, axis=0)
+        if self.kernel_approx:
+            X_labeled = self.kernel_function.transform(X_labeled)
+            X_unlabeled = self.kernel_function.transform(X_unlabeled)
+        y_labeled = self.y[self.labeled_indices]
+        objective = cp.Maximize(
+            self.rho - (1 / (self.v * n_unlabeled)) * cp.sum(self.xi_unlabeled) - self.C * cp.sum(self.xi_labeled)
+        )
+         # Constraints for unlabeled data
+        constraints = [
+            X_unlabeled @ self.w >= self.rho - self.xi_unlabeled,
+            self.xi_unlabeled >= 0
+        ]
+
+        # Constraints for labeled data
+        constraints += [
+            *(y_labeled[j] * (X_labeled[j] @ self.w) >= 1 - self.xi_labeled[j] for j in range(n_labeled)),
+            self.xi_labeled >= 0
+        ]
+        
+
+        constraints += [cp.norm(self.w) <= 1, cp.sum(self.w) == 1, self.w >= 0]
+
+        # Solve the problem
+        problem = cp.Problem(objective, constraints)
+        problem.solve()
+
+
 class OCSVMCVXPrimal:
     def __init__(self, data, v=0.1):
         self.data = data
@@ -40,26 +141,104 @@ class OCSVMCVXPrimal:
     def predict(self, x):
         return np.sign(self.decision_function(x))
     
+
+class OCSVMCVXPrimalMinimization:
+    def __init__(self, nu=0.1):
+        """
+        Initialize the One-Class SVM model.
+
+        Parameters:
+        nu: float, regularization parameter (0 < nu ≤ 1)
+        """
+        self.nu = nu
+        self.w = None
+        self.rho = None
+
+    def fit(self, X):
+        """
+        Fit the One-Class SVM model to the data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+        """
+        n_samples, n_features = X.shape
+
+        # Variables
+        w = cp.Variable(n_features)
+        rho = cp.Variable()
+        xi = cp.Variable(n_samples, nonneg=True)
+
+        # Objective
+        objective = cp.Minimize((1 / (self.nu * n_samples)) * cp.sum(xi) - rho)
+
+        # Constraints
+        constraints = [X @ w >= rho - xi, xi >= 0]
+        constraints += [cp.norm(w, 2) <= 1]
+
+        # Solve the problem
+        problem = cp.Problem(objective, constraints)
+        problem.solve()
+
+        if problem.status != cp.OPTIMAL:
+            raise ValueError("Optimization did not converge")
+
+        self.w = w.value
+        self.rho = rho.value
+
+    def decision_function(self, X):
+        """
+        Compute the decision scores for input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        scores: ndarray of shape (n_samples,)
+        """
+        return X @ self.w - self.rho
+
+    def predict(self, X):
+        """
+        Predict labels for input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        labels: ndarray of shape (n_samples,), 1 for inliers, -1 for outliers
+        """
+        scores = self.decision_function(X)
+        return np.sign(scores)
+    
 class OCSVMCVXPrimalRad:
     # radius formulation
-    def __init__(self, data, v=0.1):
+    def __init__(self, data, v=0.1, kernel_approx=True):
         self.data = data
         self.n = data.shape[0]
         self.v = v
         self.radius = cp.Variable()
         self.xi = cp.Variable(self.n, nonneg=True)
-        self.center = cp.Variable(data.shape[1])
         self.slack_weights = np.ones(self.n)
 
         self.hard_constraint_indices = []
         self.labels = []
+        self.kernel_function = None
+        if kernel_approx:
+            self.kernel_function = RBFKernelApproximation(gamma=0.5, n_features=100)
 
         # define the objective function
         self.objective = cp.Minimize(self.radius + (1 / (self.v * self.n)) * cp.sum(self.xi))
         # define the constraints
-        self.constraints = [
-            cp.norm(self.data[i, :] - self.center, 2)**2 <= self.radius + self.xi[i] for i in range(self.n)
-        ]
+        if kernel_approx:
+            self.center = cp.Variable(self.kernel_function.n_features)
+            self.constraints = [
+                cp.norm(self.kernel_function.fit_transform(self.data)[i, :] - self.center, 2)**2 <= self.radius + self.xi[i] for i in range(self.n)
+            ]
+        else:
+            self.center = cp.Variable(data.shape[1])
+            self.constraints = [
+                cp.norm(self.data[i, :] - self.center, 2)**2 <= self.radius + self.xi[i] for i in range(self.n)
+            ]
 
     def solve(self):
         problem = cp.Problem(self.objective, self.constraints)
@@ -68,6 +247,8 @@ class OCSVMCVXPrimalRad:
         return self.center.value, self.radius.value, self.xi.value
 
     def decision_function(self, x):
+        if self.kernel_function:
+            x = self.kernel_function.transform(x)
         distances_squared = np.sum((x - self.center.value) ** 2, axis=1)
         decision_values = self.radius.value - distances_squared
 
@@ -89,35 +270,42 @@ class OCSVMCVXPrimalRad:
             return
         self.labels.append(label)
         self.hard_constraint_indices.append(index)
+        self.slack_weights[index] = 5
+        self.slack_weights /= 2
+        self.slack_weights[self.hard_constraint_indices] *= 5
 
-        self.slack_weights[index] = 10
         weighted_slack = cp.sum(cp.multiply(self.slack_weights, self.xi))
 
         #soft_constraint = cp.norm(self.data[index, :] - self.center, 2)**2 <= self.radius + self.xi[index]
         
         # define the objective function
-        #self.objective = cp.Minimize(self.radius + (1 / (self.v * self.n)) * weighted_slack)
-        self.objective = cp.Minimize(self.radius + (1 / (self.v * self.n)) * cp.sum(self.xi))
+        self.objective = cp.Minimize(self.radius + (1 / (self.v * self.n)) * weighted_slack)
+        #self.objective = cp.Minimize(self.radius + (1 / (self.v * self.n)) * cp.sum(self.xi))
         # define the constraints
-        self.constraints = [
-            cp.norm(self.data[i, :] - self.center, 2)**2 <= (self.radius + self.xi[i]) for i in range(self.n)
-        ]
+        if self.kernel_function:
+            self.constraints = [
+                cp.norm(self.kernel_function.transform(self.data)[i, :] - self.center, 2)**2 <= self.radius + self.xi[i] for i in range(self.n)
+            ]
+        else:
+            self.constraints = [
+                cp.norm(self.data[i, :] - self.center, 2)**2 <= (self.radius + self.xi[i]) for i in range(self.n)
+            ]
 
-        self.constraints = []
-        for i in range(self.n):
-            aux_dist = cp.norm(self.data[i, :] - self.center, 2)**2
-            aux_dist_root = cp.norm(self.data[i, :] - self.center, 2)
-            if i in self.hard_constraint_indices:
-                clabel = self.labels[self.hard_constraint_indices.index(i)]
-                if clabel == 1: # inlier
-                    #print("I'M AN INLIER")
-                    constraint = aux_dist <= self.radius + self.xi[i]
-                elif clabel == -1:          # outlier
-                    #print("I'M AN OUTLIER")
-                    constraint = -aux_dist_root <= -cp.sqrt(self.radius + 1e-6 + self.xi[i])
-            else:
-                constraint = aux_dist <= self.radius + self.xi[i]
-            self.constraints.append(constraint)
+        # self.constraints = []
+        # for i in range(self.n):
+        #     aux_dist = cp.norm(self.data[i, :] - self.center, 2)**2
+        #     aux_dist_root = cp.norm(self.data[i, :] - self.center, 2)
+        #     if i in self.hard_constraint_indices:
+        #         clabel = self.labels[self.hard_constraint_indices.index(i)]
+        #         if clabel == 1: # inlier
+        #             #print("I'M AN INLIER")
+        #             constraint = aux_dist <= self.radius + self.xi[i]
+        #         elif clabel == -1:          # outlier
+        #             #print("I'M AN OUTLIER")
+        #             constraint = -aux_dist_root <= -cp.sqrt(self.radius + 1e-6 + self.xi[i])
+        #     else:
+        #         constraint = aux_dist <= self.radius + self.xi[i]
+        #     self.constraints.append(constraint)
         self.constraints += [self.xi >= 0]
 
 
@@ -158,13 +346,16 @@ class OCSVMCVXPrimalRad:
 
 class OCSVMCVXDualRad:
     # radius formulation
-    def __init__(self, data, v=0.1):
+    def __init__(self, data, v, kernel='rbf', gamma=1.0):
         self.data = data
         self.n = data.shape[0]
         self.v = v
         self.m = data.shape[1]
 
-        self.K = data @ data.T
+        self.kernel = kernel
+        self.gamma = gamma
+        #self.K = data @ data.T
+        self.K = self._kernel_function(data, data)
 
         self.hard_constraint_indices = set()
         # Define dual variables
@@ -173,6 +364,15 @@ class OCSVMCVXDualRad:
         # Objective function for the dual
         self.objective = cp.Minimize(cp.quad_form(self.alpha, cp.Parameter(shape=self.K.shape, value=self.K, PSD=True)) - cp.sum(cp.multiply(self.alpha, np.diag(self.K))))
         self.constraints = [self.alpha >= 0, self.alpha <= 1 / (self.v * self.n), cp.sum(self.alpha) == 1]
+
+    def _kernel_function(self, X1, X2):
+        if self.kernel == 'linear':
+            return X1 @ X2.T
+        elif self.kernel == 'rbf':
+            sq_dists = np.sum(X1**2, axis=1).reshape(-1, 1) + np.sum(X2**2, axis=1) - 2 * (X1 @ X2.T)
+            return np.exp(-self.gamma * sq_dists)
+        else:
+            raise ValueError("Unsupported kernel type")
 
     def solve(self):
         problem = cp.Problem(self.objective, self.constraints)
@@ -190,7 +390,8 @@ class OCSVMCVXDualRad:
             + np.sum(self.alpha.value[:, None] * self.alpha.value[None, :] * self.K)  # sum_{i,j} alpha_i * alpha_j * <x_i, x_j>
         )
         test_norms_squared = np.sum(x ** 2, axis=1)
-        K_test_train = x @ self.data.T
+        #K_test_train = x @ self.data.T
+        K_test_train = self._kernel_function(x, self.data)
         dual_term = 2 * np.dot(K_test_train, self.alpha.value)
         radius_term = np.sum(self.alpha.value[:, None] * self.alpha.value[None, :] * self.K)
         decision_values = test_norms_squared - dual_term + radius_term
@@ -317,12 +518,15 @@ class OCSVMRadAlt:
         return self.R.value - np.sum((X - self.c.value)**2, axis=1)
 
 class OCSVMCVXDual:
-    def __init__(self, data, v):
+    def __init__(self, data, v, kernel='rbf', gamma=1.0):
         self.data = data
         self.n = data.shape[0]
         self.v = v
         self.alpha = cp.Variable(self.n)
-        self.K = data @ data.T
+        self.kernel = kernel
+        self.gamma = gamma
+        #self.K = data @ data.T
+        self.K = self._kernel_function(data, data)
         self.objective = cp.Minimize(0.5 * cp.quad_form(self.alpha, cp.Parameter(shape=self.K.shape, value=self.K, PSD=True)))
 
         # Define the constraints
@@ -334,6 +538,15 @@ class OCSVMCVXDual:
 
         self. labels = np.array([None] * self.n) 
 
+    def _kernel_function(self, X1, X2):
+        if self.kernel == 'linear':
+            return X1 @ X2.T
+        elif self.kernel == 'rbf':
+            sq_dists = np.sum(X1**2, axis=1).reshape(-1, 1) + np.sum(X2**2, axis=1) - 2 * (X1 @ X2.T)
+            return np.exp(-self.gamma * sq_dists)
+        else:
+            raise ValueError("Unsupported kernel type")
+        
     def solve(self):
         problem = cp.Problem(self.objective, self.constraints)
         problem.solve()
@@ -341,7 +554,7 @@ class OCSVMCVXDual:
         return self.alpha.value
     
     def decision_function(self, x):
-        K_test = x @ self.data.T
+        K_test = self._kernel_function(x, self.data)
 
         support_vector_indices = np.where((self.alpha.value > 1e-5) & (self.alpha.value < (1 / (self.v * self.n))))[0]
 
@@ -542,3 +755,193 @@ def compute_rho(K, mu_support, idx_support):
 # # Anomaly scores (higher scores indicate more likely inliers)
 # scores = boosted_ocsvm.decision_function(X)
 # print("Anomaly scores:", scores)
+
+class SemiSupervisedOneClassSVM:
+    def __init__(self, nu=0.1, kernel='rbf', gamma=1.0):
+        """
+        Initialize the Semi-Supervised One-Class SVM.
+
+        Parameters:
+        nu: float, regularization parameter (0 < nu ≤ 1)
+        kernel: str, kernel type ('linear', 'rbf')
+        gamma: float, parameter for RBF kernel
+        """
+        self.nu = nu
+        self.kernel = kernel
+        self.gamma = gamma
+        self.X_unlabeled = None
+        self.labeled_data = []  # To store labeled data (x, label)
+        
+    def _kernel_function(self, X1, X2):
+        if self.kernel == 'linear':
+            return X1 @ X2.T
+        elif self.kernel == 'rbf':
+            sq_dists = np.sum(X1**2, axis=1).reshape(-1, 1) + np.sum(X2**2, axis=1) - 2 * (X1 @ X2.T)
+            return np.exp(-self.gamma * sq_dists)
+        else:
+            raise ValueError("Unsupported kernel type")
+
+    def fit(self, X_unlabeled):
+        """
+        Fit the One-Class SVM to the unlabeled data.
+
+        Parameters:
+        X_unlabeled: ndarray of shape (n_samples, n_features)
+        """
+        self.X_unlabeled = X_unlabeled
+        n_samples = X_unlabeled.shape[0]
+
+        # Kernel matrix
+        K = self._kernel_function(X_unlabeled, X_unlabeled)
+
+        # Define optimization variables
+        alpha = cp.Variable(n_samples, nonneg=True)
+
+        # Define the problem
+        objective = cp.Maximize(cp.sum(alpha) - 0.5 * cp.quad_form(alpha, cp.Parameter(shape=K.shape, value=K, PSD=True)))
+        constraints = [cp.sum(alpha) == self.nu * n_samples, alpha >= 0]
+        problem = cp.Problem(objective, constraints)
+
+        # Solve the problem
+        problem.solve()
+        
+        if problem.status != cp.OPTIMAL:
+            raise ValueError("Optimization failed")
+
+        self.alpha = alpha.value
+        self.support_vectors = X_unlabeled[self.alpha > 1e-6]
+        self.support_vector_indices = np.where(self.alpha > 1e-6)[0]
+        self.bias = np.mean(K[self.support_vector_indices, :] @ self.alpha - 1)
+
+    def add_labeled_data(self, x, label):
+        """
+        Add labeled data and refine the model dynamically.
+
+        Parameters:
+        x: ndarray of shape (n_features,)
+        label: int, 1 for normal and -1 for anomaly
+        """
+        self.labeled_data.append((x, label))
+
+        # Update the decision boundary using labeled data
+        if len(self.labeled_data) > 0:
+            X_labeled = np.array([d[0] for d in self.labeled_data])
+            y_labeled = np.array([d[1] for d in self.labeled_data])
+
+            # Kernel matrices
+            K_ul = self._kernel_function(self.X_unlabeled, X_labeled)
+            K_ll = self._kernel_function(X_labeled, X_labeled)
+            
+            # Incorporate labeled data constraints
+            n_samples = self.X_unlabeled.shape[0]
+            m_labeled = len(y_labeled)
+            alpha = cp.Variable(n_samples, nonneg=True)
+            beta = cp.Variable(m_labeled)
+
+            # Redefine optimization problem
+            objective = cp.Maximize(
+                cp.sum(alpha) - 0.5 * cp.quad_form(alpha, self._kernel_function(self.X_unlabeled, self.X_unlabeled))
+                - cp.quad_form(beta, K_ll)
+            )
+
+            constraints = [
+                cp.sum(alpha) == self.nu * n_samples,
+                alpha >= 0,
+                y_labeled * (K_ul.T @ alpha + beta) >= 1  # Labeled constraints
+            ]
+
+            problem = cp.Problem(objective, constraints)
+
+            problem.solve()
+
+            if problem.status != cp.OPTIMAL:
+                raise ValueError("Optimization failed with labeled data")
+
+            self.alpha = alpha.value
+            self.beta = beta.value
+
+    def decision_function(self, X):
+        """
+        Compute the decision function for the input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        scores: ndarray of shape (n_samples,)
+        """
+        K = self._kernel_function(X, self.X_unlabeled)
+        decision_scores = K @ self.alpha - self.bias
+
+        if len(self.labeled_data) > 0:
+            K_labeled = self._kernel_function(X, np.array([d[0] for d in self.labeled_data]))
+            decision_scores += K_labeled @ self.beta
+
+        return decision_scores
+
+    def predict(self, X):
+        """
+        Predict labels for the input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        labels: ndarray of shape (n_samples,), 1 for normal, -1 for anomaly
+        """
+        return np.sign(self.decision_function(X))
+    
+
+class RBFKernelApproximation:
+    def __init__(self, gamma=1.0, n_features=100):
+        """
+        Initialize the RBF kernel approximation using Random Fourier Features.
+
+        Parameters:
+        gamma: float, RBF kernel parameter
+        n_features: int, number of random Fourier features
+        """
+        self.gamma = gamma
+        self.n_features = n_features
+        self.omega = None
+        self.bias = None
+
+    def fit(self, X):
+        np.random.seed(42)
+        """
+        Fit the random Fourier features to the input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+        """
+        n_features = X.shape[1]
+        self.omega = np.random.normal(0, np.sqrt(2 * self.gamma), size=(n_features, self.n_features))
+        self.bias = np.random.uniform(0, 2 * np.pi, size=self.n_features)
+
+    def transform(self, X):
+        """
+        Transform the input data using the random Fourier feature map.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        Z: ndarray of shape (n_samples, n_features)
+        """
+        projection = X @ self.omega + self.bias
+        Z = np.sqrt(2 / self.n_features) * np.cos(projection)
+        return Z
+
+    def fit_transform(self, X):
+        """
+        Fit the random Fourier features and transform the input data.
+
+        Parameters:
+        X: ndarray of shape (n_samples, n_features)
+
+        Returns:
+        Z: ndarray of shape (n_samples, n_features)
+        """
+        self.fit(X)
+        return self.transform(X)
+
