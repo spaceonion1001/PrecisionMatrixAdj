@@ -729,6 +729,9 @@ class BoostMetric:
     def get_w_Z(self):
         return self.w_s, self.Z_s
     
+    def get_us(self):
+        return self.u_r_arr
+    
     def calc_sigma_metric(self, dists):
         three_sigma_empirical = 3*dists.var()
         # num_points_outside = (dists > three_sigma_empirical).sum()
@@ -1025,9 +1028,9 @@ if __name__ == "__main__":
     # svm_preds_primal_min[svm_preds_primal_min == 1] = 0  # nominals
     # svm_preds_primal_min[svm_preds_primal_min == -1] = 1 # outliers
 
-    # clf_primal_mix = OCSVMMix(v=0.2, kernel_approx=True, gamma=0.2, n_features=200)
+    # clf_primal_mix = OCSVMMix(v=0.05, kernel_approx=True, gamma=0.5, n_features=200)
     # clf_primal_mix.fit(features_subset, labels_subset)
-    # svm_preds_primal_mix = clf_primal_mix.predict(features)
+    # svm_preds_primal_mix = clf_primal_mix.predict(features_subset)
     # svm_preds_primal_mix[svm_preds_primal_mix == 1] = 0  # nominals
     # svm_preds_primal_mix[svm_preds_primal_mix == -1] = 1 # outliers
 
@@ -1050,16 +1053,19 @@ if __name__ == "__main__":
     # select the top 10 closest points to the decision boundary that are incorrectly classified
 
     ####################
-    # incorrect_points = (svm_preds_primal_mix != 1-labels)
+    # labels_subset[labels_subset == -1] = 0
+    # incorrect_points = (svm_preds_primal_mix != 1-labels_subset)
     # incorrect_points_idx = np.where(incorrect_points)[0]
-    # decision_func_mix = clf_primal_mix.decision_function(features)
-    # smallest_k_idx = np.argpartition(np.abs(decision_func_mix[incorrect_points_idx]), 10)[:10]
+    # decision_func_mix = clf_primal_mix.decision_function(features_subset)
+    # smallest_k_idx = np.argpartition(np.abs(decision_func_mix[incorrect_points_idx]), 55)[:55]
     # original_idx = incorrect_points_idx[smallest_k_idx]
+    # mix_precs = []
     # print("Mix Ratio: ", svm_preds_primal_mix.sum()/svm_preds_primal_mix.shape[0])
-    # print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
+    # #print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
+    # print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels_subset, svm_preds_primal_mix), f1_score(1-labels_subset, svm_preds_primal_mix), precision_score(1-labels_subset, svm_preds_primal_mix), recall_score(1-labels_subset, svm_preds_primal_mix)))
     # for j, idx in enumerate(original_idx):
     #     print(">> Iteration {} <<".format(j))
-    #     print("True Label {}".format(1-labels[idx]))
+    #     print("True Label {}".format(1-labels_subset[idx]))
     #     print("Index {}".format(idx))
     #     clf_primal_mix.add_labeled_example(idx)
     #     svm_preds_primal_mix = clf_primal_mix.predict(features)
@@ -1068,12 +1074,18 @@ if __name__ == "__main__":
     #     # print the ratio of anomalies
     #     print("Mix Ratio: ", svm_preds_primal_mix.sum()/svm_preds_primal_mix.shape[0])
     #     # print the accuracy, f1, precision, recall
+    #     mix_precs.append(precision_score(1-labels, svm_preds_primal_mix))
     #     print("SVM Mix: Accuracy {}, F1 {}, Precision {}, Recall {}".format(accuracy_score(1-labels, svm_preds_primal_mix), f1_score(1-labels, svm_preds_primal_mix), precision_score(1-labels, svm_preds_primal_mix), recall_score(1-labels, svm_preds_primal_mix)))
     #     print(">>>>>>>>><<<<<<<<<")
 
     #     # check incorrect points again and see if classified correctly
     #     print((svm_preds_primal_mix[idx] == (1-labels)[idx]))
-
+    # plt.plot(mix_precs)
+    # plt.xlabel('Iteration')
+    # plt.ylabel('Precision')
+    # plt.title('SemiSupervised SVM Precision {}'.format(args.data))
+    # plt.ylim(0.0, 1.0)
+    # plt.savefig('./figures/debugging_figs/semi_supervised_svm_precision_{}'.format(args.data))
     ################
 
     ####################
@@ -1172,6 +1184,12 @@ if __name__ == "__main__":
     bm = BoostMetric(data=features, labels=labels, init_dist_mat=init_dist_mat, args=args, v=args.v, J=args.iters, top_k=args.k)
     X = bm.iterate()
     w, Z = bm.get_w_Z()
+    us = bm.get_us()
+    argmax_u = np.argmax(us, axis=0)
+    print("Argmax U {}".format(us[argmax_u]))
+    print("Argmax of U in W {}".format(w[argmax_u]))
+    #print(us)
+    exit()
     print("Length of w {}".format(len(w)))
     plt.plot(np.arange(args.iters), bm.f1s, label="F1")
     plt.plot(np.arange(args.iters), bm.precisions, label='Precision')
