@@ -13,6 +13,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC, OneClassSVM
 from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances
 from sklearn.utils import shuffle
+
 from numpy.linalg import inv
 from scipy.linalg import null_space
 from scipy.special import expit
@@ -64,6 +65,8 @@ class BoostMetric:
         self.queried_nominals = []
         self.queried_anomalies = []
         self.nominal_directions = []
+        self.queried_indices = []
+        self.masked_data = np.ones(self.data.shape[0], dtype=bool)
 
         self.num_anomalies_queried = 0
         self.num_anomalies_queried_list = []
@@ -93,7 +96,7 @@ class BoostMetric:
             if self.args.true_feedback:
                 self.oml_flag = False
 
-                dists, curr_Z, curr_triplet = self.get_user_feedback(args=self.args, itr=j, use_orig_mu=self.args.original_mu, use_top_k=self.args.use_top_k, negate=self.args.negate)
+                _ , curr_Z, curr_triplet = self.get_user_feedback(args=self.args, itr=j, use_orig_mu=self.args.original_mu, use_top_k=self.args.use_top_k, negate=self.args.negate)
                 if not self.oml_flag:
                     if not is_symmetric(curr_Z):
                         curr_Z = (curr_Z + curr_Z.T)/2
@@ -793,6 +796,9 @@ class BoostMetric:
         return np.delete(dists, [selected_nom_idx, selected_anom_idx], axis=0), curr_Z, curr_triplet
     
     def get_user_feedback(self, args, itr=0, use_mahal=False, use_orig_mu=True, use_top_k=True, negate=False):
+        use_data = self.data[self.masked_data, :]
+        use_labels = self.labels[self.masked_data]
+        print("Use Data Shape: ", use_data.shape)
         original_dists = []
         orig_mu = np.mean(self.original_data, axis=0)
         for i in range(self.original_data.shape[0]):
@@ -816,20 +822,20 @@ class BoostMetric:
         if use_orig_mu:
             mu = np.mean(self.original_data, axis=0)
         else:
-            mu = np.mean(self.data, axis=0)
-        anomaly_scores = calc_anomaly_scores(features=self.data, A_t=self.curr_dist_mat, mean_vec=mu)
+            mu = np.mean(use_data, axis=0)
+        anomaly_scores = calc_anomaly_scores(features=use_data, A_t=self.curr_dist_mat, mean_vec=mu)
         # select the maximal anomaly score
         selected_idx = np.argmax(anomaly_scores)
         selected_score = anomaly_scores[selected_idx]
-        selected_point = self.data[selected_idx, :]
-        selected_label = self.labels[selected_idx]
+        selected_point = use_data[selected_idx, :]
+        selected_label = use_labels[selected_idx]
         print("Selected Point Score: {}".format(selected_score))
         print("Score Mean: {}".format(np.mean(anomaly_scores)))
         print("Score Max: {}".format(np.max(anomaly_scores)))
         print("Score Min: {}".format(np.min(anomaly_scores)))
         # likely anomalies are those outside the 95th percentile
         percentile_thresh = np.percentile(anomaly_scores, 95)
-        percentile_thresh_conservative = np.percentile(anomaly_scores, 25)
+        percentile_thresh_conservative = np.percentile(anomaly_scores, 5)
         likely_anomalies = np.where(anomaly_scores > percentile_thresh)[0]
         # likely nominal are those inside the 95th percentile
         likely_nominals = np.where(anomaly_scores < percentile_thresh)[0]
@@ -845,7 +851,7 @@ class BoostMetric:
             likely_nominal_dists = anomaly_scores[likely_nominals]
             a_2_idx = np.argmin(np.abs(likely_nominal_dists - percentile_thresh))
             a_2_idx = likely_nominals[a_2_idx]
-            a_2 = self.data[a_2_idx, :]
+            a_2 = use_data[a_2_idx, :]
             a_k = selected_point
 
             diff = a_k - mu
@@ -871,7 +877,6 @@ class BoostMetric:
             
         # if nominal
         else:
-            self.queried_nominals.append(selected_point)
             if len(self.queried_anomalies) > 0:
                 queried_anomaly_scores = calc_anomaly_scores(features=np.array(self.queried_anomalies), A_t=self.curr_dist_mat, mean_vec=mu)
                 # select the maximal anomaly score
@@ -882,16 +887,38 @@ class BoostMetric:
                 #a_k = self.data[a_k_idx, :]
                 # select the point with the second highest anomaly score
                 a_k_idx = np.argsort(anomaly_scores)[::-1][1]
-                a_k = self.data[a_k_idx, :]
+                a_k = use_data[a_k_idx, :]
             a_2 = selected_point
 
-            if self.args.use_oml:
-                print("Using OML")
-                self.oml_flag = True
-                #curr_Z = self.oml_branch(u_point=selected_point, mu=mu)
-                self.oml_branch(u_point=selected_point, mu=mu)
+            if self.args.use_oml and len(self.queried_anomalies) <= 0:
+                if len(self.queried_anomalies) > 0 and self.args.anom_pairwise:
+                    ##########################
+                    # THIS SECTION DOESN'T WORK WELL
+                    self.oml_flag = True
+                    queried_anomaly_scores = calc_anomaly_scores(features=np.array(self.queried_anomalies), A_t=self.curr_dist_mat, mean_vec=mu)
+                    # select the maximal anomaly score
+                    a_k_idx = np.argmax(queried_anomaly_scores)
+                    a_k = self.queried_anomalies[a_k_idx]
+                    curr_anom_nom_dist = mahalanobis(selected_point, a_k, self.curr_dist_mat)
+                    diff_class_dist = curr_anom_nom_dist*2
+                    print("Using OML Anom Pairwise: Dist {}".format(diff_class_dist))
+                    #curr_Z = self.oml_branch(u_point=selected_point, mu=a_k, y_t=diff_class_dist)
+                    print("Old Distance Between Points: {}".format(mahalanobis(selected_point, a_k, self.curr_dist_mat)))
+                    self.oml_branch(u_point=selected_point, mu=a_k, y_t=diff_class_dist)
+                    print("New Distance Between Points: {}".format(mahalanobis(selected_point, a_k, self.curr_dist_mat)))
+                    ###########################
+                else:
+                    print("Using OML")
+                    self.oml_flag = True
+                    #curr_Z = self.oml_branch(u_point=selected_point, mu=mu)
+                    print("Old Distance Between Points: {}".format(mahalanobis(selected_point, mu, self.curr_dist_mat)))
+                    self.oml_branch(u_point=selected_point, mu=mu, y_t=self.args.same_class_dist)
+                    #self.oml_branch(u_point=selected_point, mu=mu, y_t=percentile_thresh_conservative)
+                    print("New Distance Between Points: {}".format(mahalanobis(selected_point, mu, self.curr_dist_mat)))
             else:
             #########
+                self.queried_nominals.append(selected_point)
+
                 diff = a_2 - mu
                 if use_mahal:
                     mahal_grad = self.curr_dist_mat @ diff
@@ -932,16 +959,21 @@ class BoostMetric:
                 curr_Z = z_vec@z_vec.T
             ##########
         # remove selected point from data
-        print("Removing Point {}".format(selected_idx))
-        self.data = np.delete(self.data, selected_idx, axis=0)
-        self.labels = np.delete(self.labels, selected_idx, axis=0)
+        selected_indices = np.flatnonzero(self.masked_data)
+        original_idx = selected_indices[selected_idx]
+        print("Removing Point {}".format(original_idx))
+        self.queried_indices.append(original_idx)
+        self.masked_data[original_idx] = False
+        #self.data = np.delete(self.data, selected_idx, axis=0)
+        #self.labels = np.delete(self.labels, selected_idx, axis=0)
 
         curr_triplet = (a_1, a_2, a_k)
         if self.oml_flag: # I want to throw up this is horrible code lol
             curr_triplet = (None, None, None)
             curr_Z = None
+        #print(selected_point)
         
-        return np.delete(anomaly_scores, selected_idx, axis=0), curr_Z, curr_triplet
+        return None, curr_Z, curr_triplet
 
 
 
@@ -1037,17 +1069,29 @@ class BoostMetric:
         y_t : float
             Desired distance
         """
-
+        print("Y_t {}".format(y_t))
         u_t = np.expand_dims(u_point, 1)
         yhat_t = mahalanobis(u_t.flatten(), mu.flatten(), self.curr_dist_mat)
         ybar = calc_ybar(eta=self.args.eta, y_t=y_t, yhat_t=yhat_t)
-        delta_update = self.calc_A_update(eta=self.args.eta, ybar=ybar, y_t=y_t, A_t=self.curr_dist_mat.copy(), u_t=u_t, v_t=np.expand_dims(mu, 1))
+        print("Ybar {}".format(ybar))
+        #delta_update = self.calc_A_update(eta=self.args.eta, ybar=ybar, y_t=y_t, A_t=self.curr_dist_mat.copy(), u_t=u_t, v_t=np.expand_dims(mu, 1))
         A_tpo = calc_A_tpo(eta=self.args.eta, ybar=ybar, y_t=y_t, A_t=self.curr_dist_mat, u_t=u_t, v_t=np.expand_dims(mu, 1))
+        # if self.args.use_top_k:
+        #     print("Using top k OML")
+        #     # get top k indices of diagonal
+        #     diag_vals = np.abs(np.diag(delta_update))
+        #     top_k_idx = np.argpartition(diag_vals, -self.top_k)[-self.top_k:]
+        #     A_tpo_zeros = np.zeros_like(delta_update)
+        #     # copy over i,j pairs of top k indices
+        #     A_tpo_zeros[top_k_idx, top_k_idx] = delta_update[top_k_idx, top_k_idx]
+        #     delta_update = A_tpo_zeros
+        #     A_tpo = self.curr_dist_mat - delta_update
+        #     print("Delta Update Max {} Min {}".format(delta_update.max(), delta_update.min()))
         self.curr_dist_mat = A_tpo
         #print(delta_update)
         #exit()
-        print("Learning Rate Factor {}".format(learning_rate_factor))
-        delta_update = delta_update*learning_rate_factor
+        #print("Learning Rate Factor {}".format(learning_rate_factor))
+        #delta_update = delta_update*learning_rate_factor
         #print(delta_update)
         #delta_update = self.make_rank_one_trace_one(delta_update)
         #print(delta_update)
@@ -1055,13 +1099,6 @@ class BoostMetric:
         #return delta_update
 
     def calc_A_update(self, eta, ybar, y_t, A_t, u_t, v_t):
-        print("Ybar", ybar)
-        print("Y_t", y_t)
-        # print("A_t", A_t.shape)
-        # print("u_t", u_t.shape)
-        # print("v_t", v_t.shape)
-        # print("eta", eta)
-        # print("A_t", A_t)
         z_t = u_t - v_t
         first = eta*(ybar - y_t)
         second = A_t@z_t@z_t.T@A_t
@@ -1070,10 +1107,9 @@ class BoostMetric:
         dsecond = z_t.T@A_t@z_t
         denom = 1 + first*dsecond
 
-        delta_update = numer/denom
-        #delta_update = (delta_update + delta_update.T)/2
-
-        return -delta_update
+        #A_tpo = A_t - numer/denom
+        
+        return numer/denom
     
     def make_rank_one_trace_one(self, Z):
         # Step 1: Extract the dominant eigenvector of Z

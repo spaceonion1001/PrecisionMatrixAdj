@@ -97,6 +97,7 @@ def calc_A_tpo(eta, ybar, y_t, A_t, u_t, v_t):
     A_tpo = A_t - numer/denom
     
     if not is_pos_def(A_tpo):
+        print("** FIXING PSD **")
         A_tpo = get_near_psd(A_tpo)
     
     assert is_pos_def(A_tpo)
