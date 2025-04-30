@@ -8,6 +8,132 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 np.random.seed(42)
 
 @njit
+def mahalanobis_fast_uv(u, v, inv_cov):
+    """
+    Compute the Mahalanobis distance between two points u and v.
+
+    Parameters:
+    - u: numpy array of shape (n_features,)
+    - v: numpy array of shape (n_features,)
+    - inv_cov: precomputed inverse covariance matrix of shape (n_features, n_features)
+
+    Returns:
+    - Mahalanobis distance (scalar)
+    """
+    delta = u - v  # Compute difference vector
+    dist = np.sqrt(np.dot(np.dot(delta, inv_cov), delta.T))  # Efficient quadratic form calculation
+    return dist
+
+@njit
+def low_rank_correction(precision_matrix, top_features, eta=0.1):
+    """
+    Applies a low-rank correction to the precision matrix to downweight selected features.
+
+    Parameters:
+    - precision_matrix: (d, d) array, the inverse covariance matrix (Σ⁻¹)
+    - top_features: list of indices of features to deweight
+    - eta: float, scaling factor for correction (should be small to preserve PSD)
+
+    Returns:
+    - corrected_precision: (d, d) array, modified precision matrix
+    """
+    print("Low Rank Correction")
+    d = precision_matrix.shape[0]
+    
+    # Construct the V matrix: each selected feature contributes a unit vector
+    V = np.zeros((d, len(top_features)))
+    for i, feature in enumerate(top_features):
+        V[feature, i] = 1  # Unit vector along the chosen feature
+
+    # Compute the low-rank correction
+    correction = eta * (V @ V.T)
+    
+    # Ensure PSD by projecting onto the PSD cone if needed
+    corrected_precision = precision_matrix - correction
+
+    # Check if PSD, and project if necessary
+    eigvals, eigvecs = np.linalg.eigh(corrected_precision)
+    eigvals = np.maximum(eigvals, 1e-6)  # Ensure all eigenvalues are non-negative
+    corrected_precision = eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+    return corrected_precision
+
+@njit
+def eigenvalue_softening(precision_matrix, top_features, alpha=0.1):
+    """
+    Softens eigenvalues of the precision matrix for selected features.
+
+    Parameters:
+    - precision_matrix: (d, d) array, the inverse covariance matrix (Σ⁻¹)
+    - top_features: list of indices of features to deweight
+    - alpha: float, fraction by which to reduce eigenvalues (0 < alpha < 1)
+
+    Returns:
+    - softened_precision: (d, d) array, modified precision matrix
+    """
+    print("Eigenvalue Softening")
+    # Eigen-decomposition
+    eigvals, eigvecs = np.linalg.eigh(precision_matrix)
+    
+    # Reduce eigenvalues corresponding to top-contributing features
+    for feature in top_features:
+        eigvals[feature] *= (1 - alpha)  # Reduce eigenvalue by alpha fraction
+
+    # Ensure PSD (all eigenvalues must be non-negative)
+    eigvals = np.maximum(eigvals, 1e-6)
+
+    # Reconstruct the precision matrix
+    softened_precision = eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+    return softened_precision
+
+@njit
+def hybrid_precision_update(precision_matrix, top_features, eta=0.5, alpha=0.3):
+    """ Combines low-rank correction and eigenvalue softening for more aggressive deweighting """
+    d = precision_matrix.shape[0]
+
+    # Apply Low-Rank Correction
+    V = np.zeros((d, len(top_features)))
+    for i, feature in enumerate(top_features):
+        V[feature, i] = 1  # Unit vectors
+
+    correction = eta * (V @ V.T)
+    corrected_precision = precision_matrix - correction
+
+    # Ensure PSD after low-rank correction
+    eigvals, eigvecs = np.linalg.eigh(corrected_precision)
+    eigvals = np.maximum(eigvals, 1e-6)  # Ensure PSD
+    corrected_precision = eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+    # Apply Eigenvalue Softening
+    eigvals[top_features] *= (1 - alpha)
+    eigvals = np.maximum(eigvals, 1e-6)  # Ensure PSD again
+    softened_precision = eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+    return softened_precision
+
+@njit
+def w_precision_update(precision_matrix, top_features, direction_vector):
+    # top features are the indices of the top features
+    # zero out the non top features in direction vector
+    d = direction_vector.shape[0]
+    for i in range(d):
+        if i not in top_features:
+            direction_vector[i] = 0.0
+    # normalize the direction vector
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    direction_vector = np.expand_dims(direction_vector, 1)
+    Z = direction_vector @ direction_vector.T
+    # make sure Z is rank one trace one
+    lamb_min_a = np.min(np.linalg.eigvals(precision_matrix))
+    #lamb_max_b = np.max(np.linalg.eigvals(Z))
+    lamb_max_b = 1.0
+    w = (lamb_min_a / lamb_max_b) - 1e-5 # w < lamb_min_a / lamb_max_b
+    
+    adjusted_precision = precision_matrix - w * Z
+    return adjusted_precision
+
+@njit
 def is_pos_def(A):
     if is_symmetric(A):
         try:
@@ -18,6 +144,7 @@ def is_pos_def(A):
             return False
     else:
         return False
+    
 @njit
 def is_symmetric(a, tol=1e-8):
     return np.all(np.abs(a-a.T) < tol)
@@ -136,6 +263,138 @@ def load_cancer_data(args):
     classes = 1 - classes
 
     return data.values, features, classes
+
+def load_yeast_data(args):
+    path = args.data_path
+
+    yeast_path = os.path.join(path, 'yeast_1.csv')
+    data = pd.read_csv(yeast_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_abalone_data(args):
+    path = args.data_path
+
+    abalone_path = os.path.join(path, 'abalone_1.csv')
+    data = pd.read_csv(abalone_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_thyroid_data(args):
+    path = args.data_path
+
+    thyroid_path = os.path.join(path, 'ann_thyroid_1v3_1.csv')
+    data = pd.read_csv(thyroid_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_cardio_data(args):
+    path = args.data_path
+
+    cardio_path = os.path.join(path, 'cardiotocography_1_1.csv')
+    data = pd.read_csv(cardio_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_mammography_data(args):
+    path = args.data_path
+
+    mammography_path = os.path.join(path, 'mammography_1.csv')
+    data = pd.read_csv(mammography_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_weather_data(args):
+    path = args.data_path
+
+    weather_path = os.path.join(path, 'weather_1.csv')
+    data = pd.read_csv(weather_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_cifar_data(args):
+    path = args.data_path
+
+    cifar_path = os.path.join(path, 'cifar_1.csv')
+    data = pd.read_csv(cifar_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_fashion_data(args):
+    path = args.data_path
+
+    fashion_path = os.path.join(path, 'fashion_1.csv')
+    data = pd.read_csv(fashion_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_oxford_data(args):
+    path = args.data_path
+
+    oxford_path = os.path.join(path, 'oxford_1.csv')
+    data = pd.read_csv(oxford_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_imagenet_data(args):
+    path = args.data_path
+
+    in_path = os.path.join(path, 'imagenet_1.csv')
+    data = pd.read_csv(in_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_nslkdd_data(args):
+    path = args.data_path
+
+    nslkdd_path = os.path.join(path, 'nslkdd_1.csv')
+    data = pd.read_csv(nslkdd_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
 
 
 def add_epsilon_noise(features):

@@ -96,7 +96,7 @@ class BoostMetric:
             if self.args.true_feedback:
                 self.oml_flag = False
 
-                _ , curr_Z, curr_triplet = self.get_user_feedback(args=self.args, itr=j, use_orig_mu=self.args.original_mu, use_top_k=self.args.use_top_k, negate=self.args.negate)
+                _ , curr_Z, curr_triplet = self.get_user_feedback(args=self.args, itr=j, use_orig_mu=self.args.original_mu, use_top_k=self.args.use_top_k, negate=self.args.negate, use_mahal=self.args.use_mahal)
                 if not self.oml_flag:
                     if not is_symmetric(curr_Z):
                         curr_Z = (curr_Z + curr_Z.T)/2
@@ -119,10 +119,17 @@ class BoostMetric:
                     H_s = self.calc_H_r_js(curr_Z=curr_Z, A_arr=A_arr)
 
                     # calculate weight with bisection search
-                    w_j = self.bisection_search(curr_Z, H_s)
+                    w_j = self.bisection_search(curr_Z, H_s, w_l=1e-5, w_u=self.args.w_upper)
                     if self.args.negate:
                         w_j = self.bisection_search_posdef(curr_Z=curr_Z, curr_dist_mat=self.curr_dist_mat, w_l=0.0, w_u=w_j)
                     new_u = []
+
+                    ################
+                    # REMOVE ME
+                    if self.args.opo:
+                        w_j = 1.0
+                    print("W_j {}".format(w_j))
+                    ################
 
                     for r in range(self.u_r.shape[0]):
                         in_exp = -H_s[r]*w_j
@@ -322,18 +329,21 @@ class BoostMetric:
             plt.savefig('figures/debugging_figs/X_{}_{}.png'.format(self.args.data, j))
             plt.close()
             #print()
-            curr_f1, curr_precision, curr_recall, num_preds = final_classification(features=self.data, labels=self.labels, X=self.curr_dist_mat)
-            self.f1s.append(curr_f1)
-            self.precisions.append(curr_precision)
-            self.recalls.append(curr_recall)
-            self.num_preds.append(num_preds)
+            # curr_f1, curr_precision, curr_recall, num_preds = final_classification(features=self.data, labels=self.labels, X=self.curr_dist_mat)
+            # self.f1s.append(curr_f1)
+            # self.precisions.append(curr_precision)
+            # self.recalls.append(curr_recall)
+            # self.num_preds.append(num_preds)
             print()
         self.w_s = np.array(w_s)
         self.Z_s = np.array(Z_s)
         
         if self.args.true_feedback:
             # save number of anomalies queried list
-            np.savetxt('figures/debugging_figs_true/num_anomalies_queried_{}_{}.csv'.format(self.args.data, self.seed), np.array(self.num_anomalies_queried_list).astype(int))
+            if self.args.save_suffix:
+                np.savetxt('figures/debugging_figs_true/num_anomalies_queried_{}_{}.csv'.format(self.args.data, self.args.save_suffix), np.array(self.num_anomalies_queried_list).astype(int))
+            else:
+                np.savetxt('figures/debugging_figs_true/num_anomalies_queried_{}_{}.csv'.format(self.args.data, self.seed), np.array(self.num_anomalies_queried_list).astype(int))
         return self.curr_dist_mat
         
     def replicate_user_feedback(self, args, itr=0):
@@ -803,7 +813,7 @@ class BoostMetric:
         orig_mu = np.mean(self.original_data, axis=0)
         for i in range(self.original_data.shape[0]):
             a_i = self.original_data[i, :]
-            curr_dist = mahalanobis(a_i, orig_mu, self.curr_dist_mat)
+            curr_dist = mahalanobis_fast_uv(a_i, orig_mu, self.curr_dist_mat)
             original_dists.append(curr_dist)
         original_dists = np.array(original_dists)
         original_anom_dists = original_dists[self.original_labels == 0]
@@ -824,8 +834,26 @@ class BoostMetric:
         else:
             mu = np.mean(use_data, axis=0)
         anomaly_scores = calc_anomaly_scores(features=use_data, A_t=self.curr_dist_mat, mean_vec=mu)
+        percentile_thresh = np.percentile(anomaly_scores, self.args.selection_thresh)
+        percentile_thresh_median = np.percentile(anomaly_scores, 50)
+        percentile_thresh_conservative = np.percentile(anomaly_scores, self.args.conserv_thresh)
+        likely_anomalies = np.where(anomaly_scores > percentile_thresh)[0]
         # select the maximal anomaly score
-        selected_idx = np.argmax(anomaly_scores)
+        
+        if self.args.prime_anomalies and itr < self.args.prime_limit:
+            selected_idx = self.get_first_anomaly(anomaly_scores, use_data, use_labels)
+        elif self.args.prime_nominals and itr < self.args.prime_limit:
+            selected_idx = self.get_first_nominal(anomaly_scores, use_data, use_labels)
+        elif self.args.use_thresh:
+            print("* Using Threshold for Point Selection *".format(percentile_thresh))
+            print("Percentile Thresh: {}".format(percentile_thresh))
+            print("Percentile Thresh Cons: {}".format(percentile_thresh_conservative))
+            # selected idx is the closest point greater than the threshold
+            selected_idx = likely_anomalies[np.argmin(np.abs(anomaly_scores[likely_anomalies] - percentile_thresh))]
+        else:
+            # greedy selection
+            selected_idx = np.argmax(anomaly_scores)
+        
         selected_score = anomaly_scores[selected_idx]
         selected_point = use_data[selected_idx, :]
         selected_label = use_labels[selected_idx]
@@ -833,12 +861,9 @@ class BoostMetric:
         print("Score Mean: {}".format(np.mean(anomaly_scores)))
         print("Score Max: {}".format(np.max(anomaly_scores)))
         print("Score Min: {}".format(np.min(anomaly_scores)))
-        # likely anomalies are those outside the 95th percentile
-        percentile_thresh = np.percentile(anomaly_scores, 95)
-        percentile_thresh_conservative = np.percentile(anomaly_scores, 5)
-        likely_anomalies = np.where(anomaly_scores > percentile_thresh)[0]
-        # likely nominal are those inside the 95th percentile
-        likely_nominals = np.where(anomaly_scores < percentile_thresh)[0]
+        # likely anomalies are those outside the 99th percentile
+        # likely nominal are those inside the 50th percentile
+        likely_nominals = np.where(anomaly_scores < percentile_thresh_conservative)[0]
         a_1 = mu
         # if anomaly
         if selected_label == 0:
@@ -890,7 +915,7 @@ class BoostMetric:
                 a_k = use_data[a_k_idx, :]
             a_2 = selected_point
 
-            if self.args.use_oml and len(self.queried_anomalies) <= 0:
+            if (self.args.use_oml and len(self.queried_anomalies) <= 0) or (self.args.oml_always):
                 if len(self.queried_anomalies) > 0 and self.args.anom_pairwise:
                     ##########################
                     # THIS SECTION DOESN'T WORK WELL
@@ -899,22 +924,30 @@ class BoostMetric:
                     # select the maximal anomaly score
                     a_k_idx = np.argmax(queried_anomaly_scores)
                     a_k = self.queried_anomalies[a_k_idx]
-                    curr_anom_nom_dist = mahalanobis(selected_point, a_k, self.curr_dist_mat)
+                    curr_anom_nom_dist = mahalanobis_fast_uv(selected_point, a_k, self.curr_dist_mat)
                     diff_class_dist = curr_anom_nom_dist*2
                     print("Using OML Anom Pairwise: Dist {}".format(diff_class_dist))
                     #curr_Z = self.oml_branch(u_point=selected_point, mu=a_k, y_t=diff_class_dist)
-                    print("Old Distance Between Points: {}".format(mahalanobis(selected_point, a_k, self.curr_dist_mat)))
+                    print("Old Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, a_k, self.curr_dist_mat)))
                     self.oml_branch(u_point=selected_point, mu=a_k, y_t=diff_class_dist)
-                    print("New Distance Between Points: {}".format(mahalanobis(selected_point, a_k, self.curr_dist_mat)))
+                    print("New Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, a_k, self.curr_dist_mat)))
                     ###########################
                 else:
                     print("Using OML")
                     self.oml_flag = True
                     #curr_Z = self.oml_branch(u_point=selected_point, mu=mu)
-                    print("Old Distance Between Points: {}".format(mahalanobis(selected_point, mu, self.curr_dist_mat)))
-                    self.oml_branch(u_point=selected_point, mu=mu, y_t=self.args.same_class_dist)
-                    #self.oml_branch(u_point=selected_point, mu=mu, y_t=percentile_thresh_conservative)
-                    print("New Distance Between Points: {}".format(mahalanobis(selected_point, mu, self.curr_dist_mat)))
+                    print("Old Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, mu, self.curr_dist_mat)))
+                    #self.oml_branch(u_point=selected_point, mu=mu, y_t=self.args.same_class_dist)
+                    self.oml_branch(u_point=selected_point, mu=mu, y_t=percentile_thresh_median)
+                    print("New Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, mu, self.curr_dist_mat)))
+
+            elif self.args.nom_deweight:
+                # don't build a weak learner, just deweight the features
+                print("Deweighting Features")
+                self.oml_flag = True # overload this flag
+                print("Old Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, mu, self.curr_dist_mat)))
+                self.deweight_features(u_point=selected_point, mean=mu)
+                print("New Distance Between Points: {}".format(mahalanobis_fast_uv(selected_point, mu, self.curr_dist_mat)))
             else:
             #########
                 self.queried_nominals.append(selected_point)
@@ -976,7 +1009,28 @@ class BoostMetric:
         return None, curr_Z, curr_triplet
 
 
-
+    def get_first_anomaly(self, anomaly_scores, use_data, use_labels):
+        print("Selecting First Anomaly")
+        # sort anomaly score indices in descending order
+        sorted_indices = np.argsort(anomaly_scores)[::-1]
+        # get the first anomaly
+        for idx in sorted_indices:
+            if use_labels[idx] == 0: # anomaly is index 0 here
+                return idx
+    
+        return None # no anomalies found
+    
+    def get_first_nominal(self, anomaly_scores, use_data, use_labels):
+        print("Selecting First Nominal")
+        # sort anomaly score indices in descending order
+        sorted_indices = np.argsort(anomaly_scores)
+        # get the first anomaly
+        for idx in sorted_indices:
+            if use_labels[idx] == 1: # nominal is index 1 here
+                return idx
+        
+        return None # no nominals found
+    
     def calc_Ahat(self):
         A_hat = np.zeros((self.A_arr.shape[1], self.A_arr.shape[2]))
 
@@ -1071,7 +1125,7 @@ class BoostMetric:
         """
         print("Y_t {}".format(y_t))
         u_t = np.expand_dims(u_point, 1)
-        yhat_t = mahalanobis(u_t.flatten(), mu.flatten(), self.curr_dist_mat)
+        yhat_t = mahalanobis_fast_uv(u_t.flatten(), mu.flatten(), self.curr_dist_mat)
         ybar = calc_ybar(eta=self.args.eta, y_t=y_t, yhat_t=yhat_t)
         print("Ybar {}".format(ybar))
         #delta_update = self.calc_A_update(eta=self.args.eta, ybar=ybar, y_t=y_t, A_t=self.curr_dist_mat.copy(), u_t=u_t, v_t=np.expand_dims(mu, 1))
@@ -1110,6 +1164,30 @@ class BoostMetric:
         #A_tpo = A_t - numer/denom
         
         return numer/denom
+    
+    def deweight_features(self, u_point, mean):
+        diff = u_point - mean
+        mahal_grad = self.curr_dist_mat @ diff
+        contributions = np.abs(diff*mahal_grad)
+        # get the top k contributions indices
+        if self.args.full_k:
+            print("> Using Full K Deweighting... ")
+            top_k_idx = np.arange(len(contributions))
+        else:
+            top_k_idx = np.argpartition(contributions, -self.top_k)[-self.top_k:]
+        # if not self.args.use_top_k:
+        #     top_k_idx = np.arange(len(contributions))
+        eta = np.max(np.abs(contributions[top_k_idx]))  # Scale by max feature contribution
+        alpha = np.clip(np.abs(contributions[top_k_idx]) / np.max(np.abs(contributions)), 0.1, 0.8)
+        #alpha = 0.8
+        #self.curr_dist_mat = low_rank_correction(self.curr_dist_mat, top_k_idx, eta=eta)
+        if self.args.eigval_deweight:
+            self.curr_dist_mat = eigenvalue_softening(self.curr_dist_mat, top_k_idx, alpha=alpha)
+        #self.curr_dist_mat = hybrid_precision_update(self.curr_dist_mat, top_k_idx, eta=eta, alpha=alpha)
+        else:
+            self.curr_dist_mat = w_precision_update(self.curr_dist_mat, top_k_idx, direction_vector=diff)
+
+        
     
     def make_rank_one_trace_one(self, Z):
         # Step 1: Extract the dominant eigenvector of Z
@@ -1189,7 +1267,7 @@ def final_classification(features, labels, X):
     mu = np.mean(features, axis=0)
     for i in range(features.shape[0]):
         a_i = features[i, :]
-        curr_dist = mahalanobis(a_i, mu, X)
+        curr_dist = mahalanobis_fast_uv(a_i, mu, X)
         dists.append(curr_dist)
         chisq_vals.append(chi2.sf(curr_dist, df=features.shape[1]-1))
     dists = np.array(dists)
@@ -1216,7 +1294,7 @@ def calc_anomaly_scores(features, A_t, mean_vec):
         v = features[i, :]
 
         #curr_dist = np.sqrt(my_mahal_squared(mean_vec, v, A_t)[0][0])
-        curr_dist = mahalanobis(v, mean_vec, A_t)
+        curr_dist = mahalanobis_fast_uv(v, mean_vec, A_t)
         dists.append(curr_dist)
 
     return np.array(dists)
@@ -1227,7 +1305,7 @@ def mahal_all_points(features, X):
         for j in range(features.shape[0]):
             u = features[i, :]
             v = features[j, :]
-            curr_dist = mahalanobis(u, v, X)
+            curr_dist = mahalanobis_fast_uv(u, v, X)
             dist_mat[i, j] = curr_dist
     
     return np.array(dist_mat)

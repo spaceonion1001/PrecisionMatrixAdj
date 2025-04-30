@@ -39,6 +39,7 @@ np.random.seed(42)
 from gmm import sim_gmm
 from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 from aad_metric_model import BoostMetric
+from aad_metric_model_v2 import AADMetricModel
 
 import faulthandler
 faulthandler.enable()
@@ -64,10 +65,25 @@ def parse_arguments():
     parser.add_argument('--identity', action='store_true')
     parser.add_argument('--use_top_k', action='store_true')
     parser.add_argument('--true_feedback', action='store_true')
+    parser.add_argument('--full_k', action='store_true')
+    parser.add_argument('--eigval_deweight', action='store_true')
     parser.add_argument('--eta', type=float, default=0.5)
     parser.add_argument('--use_oml', action='store_true')
     parser.add_argument('--same_class_dist', type=float, default=0.0)
     parser.add_argument('--anom_pairwise', action='store_true')
+    parser.add_argument('--use_thresh', action='store_true')
+    parser.add_argument('--save_suffix', type=str, default=None)
+    parser.add_argument('--conserv_thresh', type=float, default=50)
+    parser.add_argument('--w_upper', type=float, default=1.0)
+    parser.add_argument('--oml_always', action='store_true')
+    parser.add_argument('--opo', action='store_true')
+    parser.add_argument('--prime_anomalies', action='store_true')
+    parser.add_argument('--prime_nominals', action='store_true')
+    parser.add_argument('--prime_limit', type=int, default=10)
+    parser.add_argument('--use_mahal', action='store_true')
+    parser.add_argument('--nom_deweight', action='store_true')
+    parser.add_argument('--selection_thresh', type=int, default=99)
+    parser.add_argument('--v2', action='store_true')
 
     args = parser.parse_args()
     if not args.closer:
@@ -93,6 +109,28 @@ def resolve_data(args):
         return load_retinopathy_data(args)
     elif args.data == 'cancer':
         return load_cancer_data(args)
+    elif args.data == 'abalone':
+        return load_abalone_data(args)
+    elif args.data == 'thyroid':
+        return load_thyroid_data(args)
+    elif args.data == 'cardio':
+        return load_cardio_data(args)
+    elif args.data == 'mammography':
+        return load_mammography_data(args)
+    elif args.data == 'weather':
+        return load_weather_data(args)
+    elif args.data == 'yeast':
+        return load_yeast_data(args)
+    elif args.data == 'cifar':
+        return load_cifar_data(args)
+    elif args.data == 'fashion':
+        return load_fashion_data(args)
+    elif args.data == 'oxford':
+        return load_oxford_data(args)
+    elif args.data == 'nslkdd':
+        return load_nslkdd_data(args)
+    elif args.data == 'imagenet':
+        return load_imagenet_data(args)
     else:
         print("Incorrect Dataset...")
         exit(1)
@@ -158,6 +196,25 @@ def predict_percentile(args, features, X, labels, percentile=95, dist='mahalanob
     plt.savefig('./figures/debugging_figs/dist_hist_{}_{}_{}'.format("FINAL", dist, args.data))
     plt.close()
     return preds
+
+def predict_top_5_percent(args, features, X, labels):
+    mu = np.mean(features, axis=0)
+    dists = []
+    for i in range(features.shape[0]):
+        a_i = features[i, :]
+        curr_dist = mahalanobis(a_i, mu, X)
+        dists.append(curr_dist)
+    dists = np.array(dists)
+    # sort indices in descending order by distance
+    sorted_indices = np.argsort(dists)[::-1]
+    top_5_percent = int(0.05*features.shape[0])
+    top_5_indices = sorted_indices[:top_5_percent]
+    print("Size of Top 5 Percent {}".format(top_5_indices.shape))
+    preds = np.ones(features.shape[0])
+    preds[top_5_indices] = 0 # anomaly
+
+    return preds
+
 
 def fast_kernel(X1, X2):
     return pairwise_distances(X1, X2, metric=lambda x, y: np.dot(x, y))
@@ -253,6 +310,7 @@ def main(args):
     print("PCA Euclidean Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_pca_euclidean_percentile), precision_score(1-labels, 1-preds_pca_euclidean_percentile), recall_score(1-labels, 1-preds_pca_euclidean_percentile)))
     preds_mahal_default_percentile = predict_percentile(args, features, X=inv(np.cov(features.T)), labels=labels, percentile=95, dist='mahalanobis')
     print("Mahal Default Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_default_percentile), precision_score(1-labels, 1-preds_mahal_default_percentile), recall_score(1-labels, 1-preds_mahal_default_percentile)))
+    
 
     dists = []
     mu = np.mean(features, axis=0)
@@ -297,29 +355,32 @@ def main_true(args):
     total_data = features.copy()
     total_labels = labels.copy()
     binary_columns = [i for i in range(features.shape[1]) if np.unique(features[:, i]).size == 2]
+    numeric_columns = [i for i in range(features.shape[1]) if i not in binary_columns]
     print("Number of Binary Columns {}".format(len(binary_columns)))
-    if len(binary_columns) > 0:
-        features_lim = features[:, binary_columns]
+    #############
+    # if len(binary_columns) > 0:
+    #     features_lim = features[:, binary_columns]
 
-        reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='jaccard')
+    #     reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='jaccard')
 
-        # Fit and transform the data
-        X_umap = reducer.fit_transform(features_lim)
+    #     # Fit and transform the data
+    #     X_umap = reducer.fit_transform(features_lim)
 
-        # Create a scatter plot
-        plt.figure(figsize=(8, 6))
-        plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
-        plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
-        mean_class0 = np.mean(X_umap[labels == 0], axis=0)
-        mean_class1 = np.mean(X_umap[labels == 1], axis=0)
-        plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
-        plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
-        plt.legend()
-        plt.title("t-SNE Visualization of Two-Class Dataset")
-        plt.xlabel("t-SNE Dimension 1")
-        plt.ylabel("t-SNE Dimension 2")
-        plt.savefig('./figures/debugging_figs_true/tsne_{}_binary'.format(args.data))
-        plt.close()
+    #     # Create a scatter plot
+    #     plt.figure(figsize=(8, 6))
+    #     plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
+    #     plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
+    #     mean_class0 = np.mean(X_umap[labels == 0], axis=0)
+    #     mean_class1 = np.mean(X_umap[labels == 1], axis=0)
+    #     plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
+    #     plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
+    #     plt.legend()
+    #     plt.title("t-SNE Visualization of Two-Class Dataset")
+    #     plt.xlabel("t-SNE Dimension 1")
+    #     plt.ylabel("t-SNE Dimension 2")
+    #     plt.savefig('./figures/debugging_figs_true/tsne_{}_binary'.format(args.data))
+    #     plt.close()
+    ###########
     
     if args.data != 'wine':
         #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
@@ -329,59 +390,67 @@ def main_true(args):
     else:
         labels[labels != 0] = 1
 
-    features = scaler.fit_transform(features)
+    #features = scaler.fit_transform(features)
+    ###########
+    numeric_features_scaled = scaler.fit_transform(features[:, numeric_columns])
+    binary_features = features[:, binary_columns]
+    features_stacked = np.hstack((numeric_features_scaled, binary_features))
+    features = features_stacked
+    ###########
     # shuffle the data
     features, labels = shuffle(features, labels, random_state=42)
-    reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
+    ###################
+    # reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
 
-    # Fit and transform the data
-    X_umap = reducer.fit_transform(features)
+    # # Fit and transform the data
+    # X_umap = reducer.fit_transform(features)
 
-    # Create a scatter plot
-    plt.figure(figsize=(8, 6))
-    plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
-    plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
-    mean_class0 = np.mean(X_umap[labels == 0], axis=0)
-    mean_class1 = np.mean(X_umap[labels == 1], axis=0)
-    plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
-    plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
-    plt.legend()
-    plt.title("t-SNE Visualization of Two-Class Dataset")
-    plt.xlabel("t-SNE Dimension 1")
-    plt.ylabel("t-SNE Dimension 2")
-    plt.savefig('./figures/debugging_figs_true/tsne_{}'.format(args.data))
-    plt.close()
+    # # Create a scatter plot
+    # plt.figure(figsize=(8, 6))
+    # plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
+    # plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
+    # mean_class0 = np.mean(X_umap[labels == 0], axis=0)
+    # mean_class1 = np.mean(X_umap[labels == 1], axis=0)
+    # plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
+    # plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
+    # plt.legend()
+    # plt.title("t-SNE Visualization of Two-Class Dataset")
+    # plt.xlabel("t-SNE Dimension 1")
+    # plt.ylabel("t-SNE Dimension 2")
+    # plt.savefig('./figures/debugging_figs_true/tsne_{}'.format(args.data))
+    # plt.close()
 
-    # Initialize UMAP for 3D
-    reducer_3d = umap.UMAP(n_components=3, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
-    X_umap_3d = reducer_3d.fit_transform(features)
+    # # Initialize UMAP for 3D
+    # reducer_3d = umap.UMAP(n_components=3, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
+    # X_umap_3d = reducer_3d.fit_transform(features)
 
-    # 3D scatter plot
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(X_umap_3d[labels == 0, 0], X_umap_3d[labels == 0, 1], X_umap_3d[labels == 0, 2], label="Class 0", alpha=0.6, c='blue', s=25)
-    ax.scatter(X_umap_3d[labels == 1, 0], X_umap_3d[labels == 1, 1], X_umap_3d[labels == 1, 2], label="Class 1", alpha=0.4, c='orange', s=10)
-    ax.set_title("UMAP 3D Visualization of Two-Class Dataset")
-    ax.set_xlabel("UMAP Dimension 1")
-    ax.set_ylabel("UMAP Dimension 2")
-    ax.set_zlabel("UMAP Dimension 3")
-    ax.legend()
-    plt.savefig('./figures/debugging_figs_true/tsne_{}_3d'.format(args.data))
-    plt.close()
+    # # 3D scatter plot
+    # fig = plt.figure(figsize=(10, 8))
+    # ax = fig.add_subplot(111, projection='3d')
+    # ax.scatter(X_umap_3d[labels == 0, 0], X_umap_3d[labels == 0, 1], X_umap_3d[labels == 0, 2], label="Class 0", alpha=0.6, c='blue', s=25)
+    # ax.scatter(X_umap_3d[labels == 1, 0], X_umap_3d[labels == 1, 1], X_umap_3d[labels == 1, 2], label="Class 1", alpha=0.4, c='orange', s=10)
+    # ax.set_title("UMAP 3D Visualization of Two-Class Dataset")
+    # ax.set_xlabel("UMAP Dimension 1")
+    # ax.set_ylabel("UMAP Dimension 2")
+    # ax.set_zlabel("UMAP Dimension 3")
+    # ax.legend()
+    # plt.savefig('./figures/debugging_figs_true/tsne_{}_3d'.format(args.data))
+    # plt.close()
 
-    # Fit a linear classifier
-    clf = LogisticRegression()
-    clf.fit(features, labels)
+    # # Fit a linear classifier
+    # clf = LogisticRegression()
+    # clf.fit(features, labels)
 
-    # Check accuracy
-    y_pred = clf.predict(features)
-    print("\n--------------------------------------------------------------------------------------------")
-    print("CLF Accuracy {} F1 {}".format(accuracy_score(labels, y_pred), f1_score(labels, y_pred)))
-    print("Proportion of Nominals {}".format(labels.sum()/len(labels)))
-    print('--------------------------------------------------------------------------------------------')
-    print()
+    # # Check accuracy
+    # y_pred = clf.predict(features)
+    # print("\n--------------------------------------------------------------------------------------------")
+    # print("CLF Accuracy {} F1 {}".format(accuracy_score(labels, y_pred), f1_score(labels, y_pred)))
+    # print("Proportion of Nominals {}".format(labels.sum()/len(labels)))
+    # print('--------------------------------------------------------------------------------------------')
+    # print()
 
-    exit()
+    # exit()
+    ###################
     
     # randomly select 10000 samples from features
     labels_svm = labels.copy()
@@ -395,9 +464,13 @@ def main_true(args):
     for seed in range(42, 43):
         print(">>>> SEED {} <<<<".format(seed))
         print("Data {} Shape {}".format(args.data, features.shape))
+        
         init_dist_mat = init_covar(features, normalize=args.normalize, identity=args.identity)
 
         bm = BoostMetric(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
+        if args.v2:
+            print("Using V2")
+            bm = AADMetricModel(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
         X = bm.iterate()
         #w, Z = bm.get_w_Z()
         #us = bm.get_us()
@@ -409,7 +482,7 @@ def main_true(args):
         #print("Length of Z {}".format(len(Z)))
         #plot_precision_recall(args, bm)
     
-        print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
+        #print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
         
         preds_mahal_percentile = predict_percentile(args, features, X, labels=labels, percentile=95, dist='mahalanobis')
         print("Mahal Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_percentile), precision_score(1-labels, 1-preds_mahal_percentile), recall_score(1-labels, 1-preds_mahal_percentile)))
@@ -421,6 +494,16 @@ def main_true(args):
         print("PCA Euclidean Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_pca_euclidean_percentile), precision_score(1-labels, 1-preds_pca_euclidean_percentile), recall_score(1-labels, 1-preds_pca_euclidean_percentile)))
         preds_mahal_default_percentile = predict_percentile(args, features, X=inv(np.cov(features.T)), labels=labels, percentile=95, dist='mahalanobis')
         print("Mahal Default Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_default_percentile), precision_score(1-labels, 1-preds_mahal_default_percentile), recall_score(1-labels, 1-preds_mahal_default_percentile)))
+        top_5_percent_preds = predict_top_5_percent(args, features, X, labels)
+        print("Top 5 Percent: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-top_5_percent_preds), precision_score(1-labels, 1-top_5_percent_preds), recall_score(1-labels, 1-top_5_percent_preds)))
+        # save the precision score to a file specific to the data
+        with open('./results/precision_scores_{}_{}.txt'.format(args.data, args.save_suffix), 'a') as f:
+            f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_percentile)))
+            # add recall and f1
+            f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_percentile)))
+            f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_percentile)))
+
+        
         print(">>>>__________<<<<")
         del bm
 

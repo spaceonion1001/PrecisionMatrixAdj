@@ -67,10 +67,10 @@ def true_y(ulabel, vlabel):
     # simple binary function
     if ulabel == vlabel:
         print("SAME LABEL")
-        return 0.0
+        return 1.0
     else:
         print("DIFFERENT LABEL")
-        return 10.0
+        return 3.0
     
 #@njit
 def calc_ybar(eta, y_t, yhat_t):
@@ -97,9 +97,11 @@ def calc_A_tpo(eta, ybar, y_t, A_t, u_t, v_t):
     A_tpo = A_t - numer/denom
     
     if not is_pos_def(A_tpo):
-        print("** FIXING PSD **")
-        A_tpo = get_near_psd(A_tpo)
-    
+        A_tpo = A_tpo + 0.1*np.eye(A_tpo.shape[0])
+        if not is_pos_def(A_tpo):
+            print("** FIXING PSD **")
+            A_tpo = get_near_psd(A_tpo)
+        
     assert is_pos_def(A_tpo)
     assert is_symmetric(A_tpo)
 
@@ -140,6 +142,8 @@ class OML:
         self.queried_points = []
         self.args = args
         self.orig_mu = np.mean(self.data, axis=0)
+        self.num_found = []
+        self.anomalies_found = 0
 
     def iterate(self):
         self.A_t = self.init_dist_mat
@@ -154,6 +158,8 @@ class OML:
             u_t = self.data[max_idx, :]
             u_label = self.labels[max_idx]
 
+            if u_label == 0:
+                self.anomalies_found += 1
             # remove from data
             self.data = np.delete(self.data, max_idx, axis=0)
             self.labels = np.delete(self.labels, max_idx, axis=0)
@@ -169,7 +175,9 @@ class OML:
                     self.update_query_set(u_t, u_label)
             self.queried_points.append(u_t)
             self.queried_labels.append(u_label)
+            self.num_found.append(self.anomalies_found)
         
+        np.savetxt('./figures/debugging_figs_oml/num_anoms_found_{}'.format(self.args.data), np.array(self.num_found).astype(int))
         return self.A_t
     
     def update_query_set(self, u_t, u_label):
