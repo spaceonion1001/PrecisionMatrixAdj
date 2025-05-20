@@ -160,6 +160,26 @@ def resolve_data(args):
         return load_nslkdd_data(args)
     elif args.data == 'imagenet':
         return load_imagenet_data(args)
+    elif args.data == 'msl':
+        return load_msl_data(args)
+    elif args.data == 'cifar_airplane':
+        return load_cifar_airplane_data(args)
+    elif args.data == 'cifar_bird':
+        return load_cifar_bird_data(args)
+    elif args.data == 'fashion_boot':
+        return load_fashion_boot_data(args)
+    elif args.data == 'fashion_sandal':
+        return load_fashion_sandal_data(args)
+    elif args.data == 'mnist':
+        return load_mnist_data(args)
+    elif args.data == 'cover':
+        return load_cover_data(args)
+    elif args.data == 'higgs':
+        return load_higgs_data(args)
+    elif args.data == 'spam':
+        return load_spam_data(args)
+    elif args.data == 'svhn':
+        return load_svhn_data(args)
     else:
         print("Incorrect Dataset...")
         exit(1)

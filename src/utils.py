@@ -128,9 +128,26 @@ def w_precision_update(precision_matrix, top_features, direction_vector):
     lamb_min_a = np.min(np.linalg.eigvals(precision_matrix))
     #lamb_max_b = np.max(np.linalg.eigvals(Z))
     lamb_max_b = 1.0
+
+    # #############
+    # # COMMENT ME OUT FOR NORMAL BEHAVIOR
+    # # OPTIONAL EIGENVALUE SCALING
+    # eigenvalues, _ = np.linalg.eigh(precision_matrix)
+    # # Normalize the eigenvalues to create a scaling vector w
+    # eigenvalue_scaling = eigenvalues / np.sum(eigenvalues)  # Normalize eigenvalues
+    # # Create a scaling vector `w_vector` that scales based on the eigenvalues
+    # w_vector = eigenvalue_scaling * (lamb_min_a / lamb_max_b) - 1e-5
+    # W_diag = np.diag(w_vector)
+    # adjusted_precision = precision_matrix - W_diag @ Z @ W_diag
+    # ##############
+
+    ############
+    # UNCOMMENT ME FOR NORMAL BEHAVIOR
     w = (lamb_min_a / lamb_max_b) - 1e-5 # w < lamb_min_a / lamb_max_b
-    
+
     adjusted_precision = precision_matrix - w * Z
+    ##########
+
     return adjusted_precision
 
 @njit
@@ -348,11 +365,119 @@ def load_cifar_data(args):
 
     return data.values, features.astype(float), classes
 
+def load_cifar_airplane_data(args):
+    path = args.data_path
+
+    cifar_path = os.path.join(path, 'cifar_1_airplane.csv')
+    data = pd.read_csv(cifar_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_cifar_bird_data(args):
+    path = args.data_path
+
+    cifar_path = os.path.join(path, 'cifar_1_bird.csv')
+    data = pd.read_csv(cifar_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
 def load_fashion_data(args):
     path = args.data_path
 
     fashion_path = os.path.join(path, 'fashion_1.csv')
     data = pd.read_csv(fashion_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_fashion_boot_data(args):
+    path = args.data_path
+
+    fashion_path = os.path.join(path, 'fashion_1_boot.csv')
+    data = pd.read_csv(fashion_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_fashion_sandal_data(args):
+    path = args.data_path
+
+    fashion_path = os.path.join(path, 'fashion_1_sandal.csv')
+    data = pd.read_csv(fashion_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_mnist_data(args):
+    path = args.data_path
+
+    mnist_path = os.path.join(path, 'mnist_1.csv')
+    data = pd.read_csv(mnist_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_svhn_data(args):
+    path = args.data_path
+
+    svhn_path = os.path.join(path, 'svhn_1.csv')
+    data = pd.read_csv(svhn_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_cover_data(args):
+    path = args.data_path
+
+    cover_path = os.path.join(path, 'covtype_1.csv')
+    data = pd.read_csv(cover_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_higgs_data(args):
+    path = args.data_path
+
+    higgs_path = os.path.join(path, 'higgs_1.csv')
+    data = pd.read_csv(higgs_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_spam_data(args):
+    path = args.data_path
+
+    spam_path = os.path.join(path, 'spam_1.csv')
+    data = pd.read_csv(spam_path)
     features = data.values[:, 1:]
     labels = data.values[:, 0]
     le = LabelEncoder()
@@ -376,6 +501,18 @@ def load_imagenet_data(args):
     path = args.data_path
 
     in_path = os.path.join(path, 'imagenet_1.csv')
+    data = pd.read_csv(in_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_msl_data(args):
+    path = args.data_path
+
+    in_path = os.path.join(path, 'msl_1.csv')
     data = pd.read_csv(in_path)
     features = data.values[:, 1:]
     labels = data.values[:, 0]
