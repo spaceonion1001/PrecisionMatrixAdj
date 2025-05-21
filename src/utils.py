@@ -125,7 +125,8 @@ def w_precision_update(precision_matrix, top_features, direction_vector):
     direction_vector = np.expand_dims(direction_vector, 1)
     Z = direction_vector @ direction_vector.T
     # make sure Z is rank one trace one
-    lamb_min_a = np.min(np.linalg.eigvals(precision_matrix))
+    #lamb_min_a = np.min(np.linalg.eigvals(precision_matrix))
+    lamb_min_a = np.min(np.linalg.eigh(precision_matrix)[0])
     #lamb_max_b = np.max(np.linalg.eigvals(Z))
     lamb_max_b = 1.0
 

@@ -246,8 +246,8 @@ def process_imagenet():
     with open("tinyimagenet_label_to_name.json", "w") as f:
         json.dump(label_to_name, f)
 
-    model = get_finetuned_resnet18(num_classes=len(train_dataset.classes), dropout_p=0.0)
-    trained_model = train_model(model, train_dataset, val_dataset, optimizer=None, num_epochs=50, batch_size=32)
+    model = get_finetuned_resnet18(num_classes=len(train_dataset.classes), dropout_p=0.2)
+    trained_model = train_model(model, train_dataset, val_dataset, optimizer=None, num_epochs=50, batch_size=64)
 
     
     

@@ -314,9 +314,23 @@ def main(args):
 
     if args.data != 'wine':
         #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
-        features = add_epsilon_noise(features=features)
         if args.data != 'bank':
             labels = 1-labels # switch 0 and 1
+
+        if args.data in ['bank', 'unsw', 'nslkdd', 'campaign']:
+            features_numeric = features[:, numeric_columns]
+            features_binary = features[:, binary_columns]
+
+            # Add epsilon noise only to binary features
+            #epsilon = 1e-5
+            #features_binary_noisy = features_binary + epsilon * np.random.randn(*features_binary.shape)
+            features_binary_noisy = add_epsilon_noise(features_binary)
+
+            # Reconstruct the full feature matrix
+            features = np.zeros_like(features)
+            features[:, numeric_columns] = features_numeric
+            features[:, binary_columns] = features_binary_noisy
+
     else:
         labels[labels != 0] = 1
     print("Unique Labels {}".format(np.unique(labels, return_counts=True)))

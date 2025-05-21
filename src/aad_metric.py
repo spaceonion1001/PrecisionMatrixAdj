@@ -12,6 +12,8 @@ from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC, OneClassSVM
 from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances
+from sklearn.covariance import GraphicalLassoCV, LedoitWolf, GraphicalLasso
+from sklearn.mixture import GaussianMixture
 from sklearn.utils import shuffle
 from sklearn.manifold import TSNE
 from sklearn.linear_model import LogisticRegression
@@ -40,6 +42,10 @@ from gmm import sim_gmm
 from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 from aad_metric_model import BoostMetric
 from aad_metric_model_v2 import AADMetricModel
+from sklearn.preprocessing import Normalizer
+
+from tsne import visualize_2d_embedding
+
 
 import faulthandler
 faulthandler.enable()
@@ -404,9 +410,12 @@ def main_true(args):
     
     if args.data != 'wine':
         #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
-        features = add_epsilon_noise(features=features)
         if args.data == 'bank':
             labels = 1-labels # switch 0 and 1
+        if args.data in ['bank', 'unsw', 'nslkdd', 'campaign']:
+            features = add_epsilon_noise(features=features) # numerical stability
+        
+
     else:
         labels[labels != 0] = 1
 
@@ -414,9 +423,38 @@ def main_true(args):
     ###########
     numeric_features_scaled = scaler.fit_transform(features[:, numeric_columns])
     binary_features = features[:, binary_columns]
+
     features_stacked = np.hstack((numeric_features_scaled, binary_features))
     features = features_stacked
     ###########
+
+
+
+
+    ###########################################
+    # # Normalize each row to unit L2 norm
+    # l2_normalizer = Normalizer(norm='l2')
+    # numeric_features_l2 = l2_normalizer.fit_transform(numeric_features_scaled)
+
+    # # Stack normalized numeric features with binary features
+    # features = np.hstack((numeric_features_l2, binary_features))
+    # ###########################################
+
+
+
+
+    ###########################################
+    # # Apply PCA whitening (full dimensionality)
+    # pca = PCA(whiten=True)
+    # numeric_features_whitened = pca.fit_transform(numeric_features_scaled)
+
+    # # Stack whitened numeric features with binary features
+    # features = np.hstack((numeric_features_whitened, binary_features))
+    ###########################################
+
+
+
+
     # shuffle the data
     features, labels = shuffle(features, labels, random_state=42)
     ###################
@@ -473,19 +511,32 @@ def main_true(args):
     ###################
     
     # randomly select 10000 samples from features
-    labels_svm = labels.copy()
-    labels_svm[labels_svm == 0] = -1
-    features_subset, labels_subset = shuffle(features, labels_svm, random_state=42)
-    features_subset = features_subset[:10000]
-    labels_subset = labels_subset[:10000]
+    # labels_svm = labels.copy()
+    # labels_svm[labels_svm == 0] = -1
+    # features_subset, labels_subset = shuffle(features, labels_svm, random_state=42)
+    # features_subset = features_subset[:10000]
+    # labels_subset = labels_subset[:10000]
    
 
+    # visualize_2d_embedding(features, labels, method='umap', args=args)
+    # visualize_2d_embedding(features, labels, method='tsne', args=args)
 
+    ###
+    # GMM STUFF
+    # k = 5
+    # print("Fitting GMM with {} components".format(k))
+    # gmm = GaussianMixture(n_components=k, covariance_type='diag', random_state=42)
+    # gmm.fit(features)
+    # print("GMM Weights {}".format(gmm.weights_))
+    # print("GMM Means {}".format(gmm.means_))
+    # print("GMM Covariances {}".format(gmm.covariances_))
+    # exit()
     for seed in range(42, 43):
         print(">>>> SEED {} <<<<".format(seed))
         print("Data {} Shape {}".format(args.data, features.shape))
         
         init_dist_mat = init_covar(features, normalize=args.normalize, identity=args.identity)
+        
 
         bm = BoostMetric(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
         if args.v2:
