@@ -11,7 +11,7 @@ from scipy.stats import chisquare, chi2
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC, OneClassSVM
-from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances
+from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances, roc_auc_score
 from sklearn.covariance import GraphicalLassoCV, LedoitWolf, GraphicalLasso
 from sklearn.mixture import GaussianMixture
 from sklearn.utils import shuffle
@@ -20,6 +20,7 @@ from sklearn.linear_model import LogisticRegression
 from numpy.linalg import inv
 import umap
 from mpl_toolkits.mplot3d import Axes3D
+import time
 
 from numba import njit
 from numba_progress import ProgressBar
@@ -41,7 +42,7 @@ np.random.seed(42)
 from gmm import sim_gmm
 from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 from aad_metric_model import BoostMetric
-from aad_metric_model_v2 import AADMetricModel
+from aad_metric_model_v2 import AADMetricModel, calc_anomaly_scores
 from sklearn.preprocessing import Normalizer
 
 from tsne import visualize_2d_embedding
@@ -90,6 +91,7 @@ def parse_arguments():
     parser.add_argument('--nom_deweight', action='store_true')
     parser.add_argument('--selection_thresh', type=int, default=99)
     parser.add_argument('--v2', action='store_true')
+    parser.add_argument('--query_method', type=str, default='')
 
     args = parser.parse_args()
     if not args.closer:
@@ -157,6 +159,10 @@ def resolve_data(args):
         return load_spam_data(args)
     elif args.data == 'svhn':
         return load_svhn_data(args)
+    elif 'cifar' in args.data:
+        return load_cifar_numbered_data(args, num=int(args.data.split('_')[-1]))
+    elif 'fashion' in args.data:
+        return load_fashion_numbered_data(args, num=int(args.data.split('_')[-1]))
     else:
         print("Incorrect Dataset...")
         exit(1)
@@ -531,9 +537,13 @@ def main_true(args):
     # print("GMM Means {}".format(gmm.means_))
     # print("GMM Covariances {}".format(gmm.covariances_))
     # exit()
-    for seed in range(42, 43):
+    runtimes = []
+    for seed in range(40, 41):
+    # for seed in range(40, 50):
         print(">>>> SEED {} <<<<".format(seed))
         print("Data {} Shape {}".format(args.data, features.shape))
+        if args.query_method == 'km':
+            print("*** Using KMeans++ for Querying ***")
         
         init_dist_mat = init_covar(features, normalize=args.normalize, identity=args.identity)
         
@@ -542,7 +552,10 @@ def main_true(args):
         if args.v2:
             print("Using V2")
             bm = AADMetricModel(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
+        start_time = time.time()
         X = bm.iterate()
+        runtime = time.time() - start_time
+        runtimes.append(runtime)
         #w, Z = bm.get_w_Z()
         #us = bm.get_us()
         #argmax_u = np.argmax(us, axis=0)
@@ -567,16 +580,36 @@ def main_true(args):
         print("Mahal Default Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_default_percentile), precision_score(1-labels, 1-preds_mahal_default_percentile), recall_score(1-labels, 1-preds_mahal_default_percentile)))
         top_5_percent_preds = predict_top_5_percent(args, features, X, labels)
         print("Top 5 Percent: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-top_5_percent_preds), precision_score(1-labels, 1-top_5_percent_preds), recall_score(1-labels, 1-top_5_percent_preds)))
+        anomaly_scores = bm.get_anomaly_scores(features)
+        anomaly_scores_default = calc_anomaly_scores(features, inv(np.cov(features.T)), np.mean(features, axis=0))
+        print("ROC AUC Default {}".format(roc_auc_score(1-labels, anomaly_scores_default)))
+        print("ROC AUC Mahal {}".format(roc_auc_score(1-labels, anomaly_scores)))
+        print("Average Precision Score Default {}".format(average_precision_score(1-labels, anomaly_scores_default)))
+        print("Average Precision Score Mahal {}".format(average_precision_score(1-labels, anomaly_scores)))
         # save the precision score to a file specific to the data
-        with open('./results/precision_scores_{}_{}.txt'.format(args.data, args.save_suffix), 'a') as f:
+        os.makedirs('./results{}'.format(args.query_method), exist_ok=True)
+        with open('./results{}/precision_scores_{}_{}.txt'.format(args.query_method, args.data, args.save_suffix), 'w') as f:
             f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_percentile)))
             # add recall and f1
             f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_percentile)))
             f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_percentile)))
+            f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores)))
+            f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores)))
+        with open('./results{}/precision_scores_{}_default.txt'.format(args.query_method, args.data), 'w') as f:
+            f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_default_percentile)))
+            # add recall and f1
+            f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_default_percentile)))
+            f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_default_percentile)))
+            f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores_default)))
+            f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores_default)))
 
         
         print(">>>>__________<<<<")
         del bm
+    runtimes = np.array(runtimes)
+    if args.query_method == 'km':
+        args.save_suffix = 'km'
+    np.savetxt('./results_runtimes/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
 
 
 

@@ -34,14 +34,23 @@ def get_args():
     return args
 
 def get_dataloader(dataset_name, batch_size=64, sample_size=10000):
-    transform = transforms.Compose([
-        ConvertToRGB(),
-        transforms.Resize((224, 224)),  # Resize for MobileNetV3
-        transforms.ToTensor(),
-        transforms.Lambda(lambda x: x.repeat(3, 1, 1)) if dataset_name == "FashionMNIST" else transforms.Lambda(lambda x: x),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) if dataset_name == "FashionMNIST" else
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    if dataset_name == 'FashionMNIST':
+        transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.Grayscale(num_output_channels=3),  # repeat channels to get 3
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet mean
+                                std=[0.229, 0.224, 0.225])   # ImageNet std
+        ])
+    else:
+        transform = transforms.Compose([
+            ConvertToRGB(),
+            transforms.Resize((224, 224)),  # Resize for MobileNetV3
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x.repeat(3, 1, 1)) if dataset_name == "FashionMNIST" else transforms.Lambda(lambda x: x),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) if dataset_name == "FashionMNIST" else
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
     
     if dataset_name == "CIFAR10":
         dataset = datasets.CIFAR10(root="./data", train=True, transform=transform, download=True)
@@ -148,13 +157,14 @@ def main():
     # feature_extractor = mobilenet.features  # Extract features directly
     # feature_extractor = feature_extractor.to(device)
     
-    #for dataset_name in ["CIFAR10", "FashionMNIST", "OxfordIIITPet"]:
+    # for dataset_name in ["CIFAR10", "FashionMNIST"]:
+    for dataset_name in ["FashionMNIST"]:
     #for dataset_name in ["NINCO"]:
     #for dataset_name in ['TinyImageNet']:
     #for dataset_name in ['MSL']:
     #for dataset_name in ['MNIST', 'KMNIST']:
-    for dataset_name in ['SVHN']:
-        dataloader = get_dataloader(dataset_name)
+    # for dataset_name in ['SVHN']:
+        dataloader = get_dataloader(dataset_name, sample_size=np.inf)
         if dataset_name == 'MSL':
             # Set device
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -256,8 +266,8 @@ def process_imagenet():
 
 
 if __name__ == "__main__":
-    # main()
+    main()
     # main_train_msl()
     # train_mnist()
-    process_imagenet()
+    # process_imagenet()
 

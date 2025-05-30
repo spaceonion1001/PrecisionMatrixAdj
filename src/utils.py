@@ -24,6 +24,15 @@ def mahalanobis_fast_uv(u, v, inv_cov):
     dist = np.sqrt(np.dot(np.dot(delta, inv_cov), delta.T))  # Efficient quadratic form calculation
     return dist
 
+def mahalanobis_fast_batch(X, center, inv_cov):
+    diffs = X - center
+    mahal_dists = np.einsum('ij,jk->i', diffs, np.dot(inv_cov, diffs.T))
+    return np.sqrt(mahal_dists)
+
+def l2_fast_batch(X, center):
+    return np.linalg.norm(X - center, axis=1)
+
+
 @njit
 def low_rank_correction(precision_matrix, top_features, eta=0.1):
     """
@@ -359,6 +368,30 @@ def load_cifar_data(args):
 
     cifar_path = os.path.join(path, 'cifar_1.csv')
     data = pd.read_csv(cifar_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_cifar_numbered_data(args, num=0):
+    path = args.data_path + '/vision_processed/'
+
+    cifar_path = os.path.join(path, 'cifar_{}_1.csv'.format(num))
+    data = pd.read_csv(cifar_path)
+    features = data.values[:, 1:]
+    labels = data.values[:, 0]
+    le = LabelEncoder()
+    classes = np.array(le.fit_transform(labels))
+
+    return data.values, features.astype(float), classes
+
+def load_fashion_numbered_data(args, num=0):
+    path = args.data_path + '/vision_processed/'
+
+    fashion_path = os.path.join(path, 'fashion_{}_1.csv'.format(num))
+    data = pd.read_csv(fashion_path)
     features = data.values[:, 1:]
     labels = data.values[:, 0]
     le = LabelEncoder()

@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances
+from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances, roc_auc_score
 from sklearn.ensemble import IsolationForest
 from sklearn.utils import shuffle
 from sklearn.preprocessing import StandardScaler
@@ -10,6 +10,7 @@ from scipy.sparse import csr_matrix, diags
 from numpy.linalg import inv
 from utils import *
 import argparse
+import time
 
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
@@ -180,6 +181,10 @@ def resolve_data(args):
         return load_spam_data(args)
     elif args.data == 'svhn':
         return load_svhn_data(args)
+    elif 'cifar' in args.data:
+        return load_cifar_numbered_data(args, num=int(args.data.split('_')[-1]))
+    elif 'fashion' in args.data:
+        return load_fashion_numbered_data(args, num=int(args.data.split('_')[-1]))
     else:
         print("Incorrect Dataset...")
         exit(1)
@@ -210,6 +215,7 @@ class GAOD:
         self.m = X.shape[1]
         self.anomalies_found = 0
         self.seed = seed
+        np.random.seed(seed)
     
     def compute_outlier_scores(self):
         """
@@ -346,31 +352,49 @@ def main(args):
     precs_reg = []
     recs_reg = []
     f1s_reg = []
+    aucs_reg = []
+    avg_precs_reg = []
     precs_95 = []
     recs_95 = []
     f1s_95 = []
+    aucs_95 = []
+    avg_precs_95 = []
     precs_iforest = []
     recs_iforest = []
     f1s_iforest = []
+    aucs_iforest = []
+    avg_precs_iforest = []
     anomalies_found = []
+    runtimes = []
     for seed in np.arange(40, 50):
+        start_time = time.time()
         gaod = GAOD(X=features, labels=labels, k=args.k, budget=args.budget, batch=args.k, seed=seed)
         scores = gaod.iterate()
+        end_time = time.time()
+        runtimes.append(end_time - start_time)
         precision_regular = precision_score(labels, decision_function(scores))
         recall_regular = recall_score(labels, decision_function(scores))
         f1_regular = f1_score(labels, decision_function(scores))
+        auc_regular = roc_auc_score(labels, scores)
+        avg_prec_reg = average_precision_score(labels, scores)
         precision_95 = precision_score(labels, decision_function_95_percentile(scores))
         recall_95 = recall_score(labels, decision_function_95_percentile(scores))
         f1_95 = f1_score(labels, decision_function_95_percentile(scores))
+        auc_95 = roc_auc_score(labels, scores)
+        avg_prec_95 = average_precision_score(labels, scores)
         precs_reg.append(precision_regular)
         recs_reg.append(recall_regular)
         f1s_reg.append(f1_regular)
+        aucs_reg.append(auc_regular)
+        avg_precs_reg.append(avg_prec_reg)
         precs_95.append(precision_95)
         recs_95.append(recall_95)
         f1s_95.append(f1_95)
+        aucs_95.append(auc_95)
+        avg_precs_95.append(avg_prec_95)
         anomalies_found.append(gaod.anomalies_found)
-        print("Precision Regular: {}, Recall Regular: {}, F1 Regular: {}".format(precision_regular, recall_regular, f1_regular))
-        print("Precision 95: {}, Recall 95: {}, F1 95: {}".format(precision_95, recall_95, f1_95))
+        print("Precision Regular: {}, Recall Regular: {}, F1 Regular: {} AUC Regular {} AvgPrec Regular {}".format(precision_regular, recall_regular, f1_regular, auc_regular, avg_prec_reg))
+        print("Precision 95: {}, Recall 95: {}, F1 95: {} AUC 95 {} AvgPrec 95 {}".format(precision_95, recall_95, f1_95, auc_95, avg_prec_95))
 
         # default isolation forest scores
         iforest = IsolationForest(random_state=seed)
@@ -381,21 +405,27 @@ def main(args):
         precision_iforest = precision_score(labels, decision_function(scores))
         recall_iforest = recall_score(labels, decision_function(scores))
         f1_iforest = f1_score(labels, decision_function(scores))
+        auc_iforest = roc_auc_score(labels, scores)
+        avg_prec_iforest = average_precision_score(labels, scores)
         precs_iforest.append(precision_iforest)
         recs_iforest.append(recall_iforest)
         f1s_iforest.append(f1_iforest)
-
-    print("Averages - Precision Regular: {}, Recall Regular: {}, F1 Regular: {}".format(np.mean(precs_reg), np.mean(recs_reg), np.mean(f1s_reg)))
-    print("Averages - Precision 95: {}, Recall 95: {}, F1 95: {}".format(np.mean(precs_95), np.mean(recs_95), np.mean(f1s_95)))
+        aucs_iforest.append(auc_iforest)
+        avg_precs_iforest.append(avg_prec_iforest)
+    print("Averages - Precision Regular: {}, Recall Regular: {}, F1 Regular: {} AUC Regular {} Avg Prec Regular {}".format(np.mean(precs_reg), np.mean(recs_reg), np.mean(f1s_reg), np.mean(aucs_reg), np.mean(avg_precs_reg)))
+    print("Averages - Precision 95: {}, Recall 95: {}, F1 95: {} AUC 95 {} Avg Prec 95 {}".format(np.mean(precs_95), np.mean(recs_95), np.mean(f1s_95), np.mean(aucs_95), np.mean(avg_precs_95)))
     # overwrite and save prec/rec/f1 scores and avg anomalies found to csv file
     # in ./results
     save_path = "./results_gaod/"
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     with open(save_path+args.data+".txt", 'w') as f:
-        f.write(f"Precision {np.mean(precs_reg)} Recall {np.mean(recs_reg)} F1 {np.mean(f1s_reg)} Avg Anomalies {np.mean(anomalies_found)}\n")
-        f.write(f"Precision 95 {np.mean(precs_95)} Recall 95 {np.mean(recs_95)} F1 95 {np.mean(f1s_95)} Avg Anomalies {np.mean(anomalies_found)}\n")
-        f.write(f"Precision iForest {np.mean(precs_iforest)} Recall iForest {np.mean(recs_iforest)} F1 iForest {np.mean(f1s_iforest)} Avg Anomalies {np.mean(anomalies_found)}\n")
+        f.write(f"Precision {np.mean(precs_reg)} Recall {np.mean(recs_reg)} F1 {np.mean(f1s_reg)} AUC {np.mean(aucs_reg)} AvgPrec {np.mean(avg_precs_reg)} Avg Anomalies {np.mean(anomalies_found)}\n")
+        f.write(f"Precision 95 {np.mean(precs_95)} Recall 95 {np.mean(recs_95)} F1 95 {np.mean(f1s_95)} AUC 95 {np.mean(aucs_95)} AvgPrec 95 {np.mean(avg_prec_95)} Avg Anomalies {np.mean(anomalies_found)}\n")
+        f.write(f"Precision iForest {np.mean(precs_iforest)} Recall iForest {np.mean(recs_iforest)} F1 iForest {np.mean(f1s_iforest)} AUC iForest {np.mean(aucs_iforest)} AvgPrec iForest {np.mean(avg_prec_iforest)} Avg Anomalies {np.mean(anomalies_found)}\n")
+
+    runtimes = np.array(runtimes)
+    np.savetxt(save_path+args.data+"_runtimes.txt", runtimes, delimiter=",")
 
     
 
