@@ -6,6 +6,7 @@ import umap.umap_ as umap  # Ensure umap-learn is installed
 import seaborn as sns
 
 def visualize_2d_embedding(features, labels, method='umap', args=None):
+    ref_font_size = 22
     os.makedirs(f"./figures/tsne/", exist_ok=True)
 
     # Choose dimensionality reduction method
@@ -19,16 +20,29 @@ def visualize_2d_embedding(features, labels, method='umap', args=None):
     # Fit and transform features
     embedding = reducer.fit_transform(features)
 
-    # Map labels to string class names
-    label_names = np.array(['anomaly' if lbl == 0 else 'nominal' for lbl in labels])
-    palette = {'anomaly': 'red', 'nominal': 'blue'}
+    # Prepare data for plotting
+    embedding = np.array(embedding)
+    labels = np.array(labels)
 
-    # Plot
-    plt.figure(figsize=(8, 6))
-    sns.scatterplot(x=embedding[:, 0], y=embedding[:, 1], hue=label_names,
-                    palette=palette, s=10, alpha=0.7)
-    plt.title(f"{method.upper()} visualization - {args.data}")
-    plt.legend(title='Label')
+    # Separate indices
+    anomaly_idx = labels == 0
+    nominal_idx = labels == 1
+
+    plt.figure(figsize=(12, 8))
+
+    # Plot nominal (blue circles)
+    plt.scatter(embedding[nominal_idx, 0], embedding[nominal_idx, 1],
+                c='blue', label='nominal', marker='o', s=60, alpha=0.6, edgecolor='black')
+
+    # Plot anomaly (red triangles)
+    plt.scatter(embedding[anomaly_idx, 0], embedding[anomaly_idx, 1],
+                c='red', label='anomaly', marker='^', s=80, alpha=0.7, edgecolor='black')
+
+    # Final formatting
+    plt.title(f"{method.upper()} visualization - {args.data}", fontsize=ref_font_size+4)
+    plt.legend(fontsize=ref_font_size-2, loc='upper right')
+    plt.xlabel('Component 1', fontsize=ref_font_size)
+    plt.ylabel('Component 2', fontsize=ref_font_size)
     plt.tight_layout()
 
     # Save figure
@@ -36,3 +50,4 @@ def visualize_2d_embedding(features, labels, method='umap', args=None):
     plt.savefig(out_path)
     plt.close()
     print(f"Saved {method} plot to: {out_path}")
+

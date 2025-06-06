@@ -40,47 +40,6 @@ def parse_arguments():
 def normalize_data(data):
     return (data - np.min(data)) / (np.max(data) - np.min(data))
 
-# def compute_directed_knn_graph(X, k, percentile=95):
-#     """
-#     Compute the weighted adjacency matrix W of a directed kNN graph.
-
-#     Parameters:
-#     - X : array of shape (n_samples, n_features)
-#         Input data.
-#     - k : int
-#         Number of nearest neighbors.
-#     - percentile : float
-#         Percentile for estimating σ.
-
-#     Returns:
-#     - W : array of shape (n_samples, n_samples)
-#         Weighted adjacency matrix.
-#     """
-#     n_samples = X.shape[0]
-
-#     # Step 1: Fit kNN model
-#     knn = NearestNeighbors(n_neighbors=k+1, algorithm='auto')  # k+1 because the point itself is included
-#     knn.fit(X)
-#     distances, indices = knn.kneighbors(X)
-
-#     # Remove self-loop (distance to itself is 0)
-#     distances = distances[:, 1:]
-#     indices = indices[:, 1:]
-
-#     # Step 2: Compute sigma
-#     kth_distances = distances[:, -1]  # distance to k-th nearest neighbor for each point
-#     sigma = 0.5 * np.percentile(kth_distances, percentile)
-
-#     # Step 3: Build the weighted adjacency matrix
-#     W = np.zeros((n_samples, n_samples))
-
-#     for i in range(n_samples):
-#         for j_idx, j in enumerate(indices[i]):
-#             dist = distances[i, j_idx]
-#             weight = np.exp(- (dist ** 2) / (2 * sigma ** 2))
-#             W[i, j] = weight  # directed: only from i to j
-
-#     return W
 
 def build_sparse_weight_matrix(X, k=10, sigma=None):
     n = X.shape[0]
@@ -423,6 +382,11 @@ def main(args):
         f.write(f"Precision {np.mean(precs_reg)} Recall {np.mean(recs_reg)} F1 {np.mean(f1s_reg)} AUC {np.mean(aucs_reg)} AvgPrec {np.mean(avg_precs_reg)} Avg Anomalies {np.mean(anomalies_found)}\n")
         f.write(f"Precision 95 {np.mean(precs_95)} Recall 95 {np.mean(recs_95)} F1 95 {np.mean(f1s_95)} AUC 95 {np.mean(aucs_95)} AvgPrec 95 {np.mean(avg_prec_95)} Avg Anomalies {np.mean(anomalies_found)}\n")
         f.write(f"Precision iForest {np.mean(precs_iforest)} Recall iForest {np.mean(recs_iforest)} F1 iForest {np.mean(f1s_iforest)} AUC iForest {np.mean(aucs_iforest)} AvgPrec iForest {np.mean(avg_prec_iforest)} Avg Anomalies {np.mean(anomalies_found)}\n")
+    np.savetxt(save_path+args.data+"_precision.txt", np.array(precs_95), delimiter=",")
+    np.savetxt(save_path+args.data+"_recall.txt", np.array(recs_95), delimiter=",")
+    np.savetxt(save_path+args.data+"_f1.txt", np.array(f1s_95), delimiter=",")
+    np.savetxt(save_path+args.data+"_auc.txt", np.array(aucs_95), delimiter=",")
+    np.savetxt(save_path+args.data+"_avgprec.txt", np.array(avg_precs_95), delimiter=",")
 
     runtimes = np.array(runtimes)
     np.savetxt(save_path+args.data+"_runtimes.txt", runtimes, delimiter=",")

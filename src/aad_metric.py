@@ -11,14 +11,14 @@ from scipy.stats import chisquare, chi2
 from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC, OneClassSVM
-from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances, roc_auc_score
+from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances, roc_auc_score, precision_recall_fscore_support
 from sklearn.covariance import GraphicalLassoCV, LedoitWolf, GraphicalLasso
 from sklearn.mixture import GaussianMixture
 from sklearn.utils import shuffle
 from sklearn.manifold import TSNE
 from sklearn.linear_model import LogisticRegression
 from numpy.linalg import inv
-import umap
+import umap.umap_ as umap
 from mpl_toolkits.mplot3d import Axes3D
 import time
 
@@ -39,8 +39,8 @@ sns.set()
 #import torch
 np.random.seed(42)
 
-from gmm import sim_gmm
-from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
+# from gmm import sim_gmm
+# from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 from aad_metric_model import BoostMetric
 from aad_metric_model_v2 import AADMetricModel, calc_anomaly_scores
 from sklearn.preprocessing import Normalizer
@@ -159,6 +159,11 @@ def resolve_data(args):
         return load_spam_data(args)
     elif args.data == 'svhn':
         return load_svhn_data(args)
+    elif 'dlpaper' in args.data and 'cifar' in args.data:
+        # return load_cifar_numbered_data_dlpaper(args, cnum=int(args.data.split('_')[-2]), itr=int(args.data.split('_')[-1]))
+        return load_cifar_numbered_data_dlpaper_seed(args, cnum=int(args.data.split('_')[-2]), seed=int(args.data.split('_')[-1]))
+    elif 'dlpaper' in args.data and 'fashion' in args.data:
+        return load_fashion_numbered_data_dlpaper_seed(args, cnum=int(args.data.split('_')[-2]), seed=int(args.data.split('_')[-1]))
     elif 'cifar' in args.data:
         return load_cifar_numbered_data(args, num=int(args.data.split('_')[-1]))
     elif 'fashion' in args.data:
@@ -270,112 +275,35 @@ def plot_precision_recall(args, bm):
     plt.savefig('figures/debugging_figs/numpreds_{}'.format(args.data))
     plt.close()
 
+
+def compute_pre_recall_f1(target, score):
+    normal_ratio = (target == 0).sum() / len(target)
+    print("Target Unique {}".format(np.unique(target, return_counts=True)))
+    print("Normal Ratio {}".format(normal_ratio))
+    threshold = np.percentile(score, 100 * normal_ratio)
+    pred = np.zeros(len(score))
+    pred[score > threshold] = 1
+    print("Number of Predicted Anomalies {}".format(pred.sum()))
+    precision, recall, f1, _ = precision_recall_fscore_support(target, pred, average='binary')
+
+    return precision, recall, f1
+
 def main(args):
-    data, features, labels = resolve_data(args)
+    # data, features, labels = resolve_data(args)
+    if 'dlpaper' in args.data:
+        features, labels, features_test, labels_test = resolve_data(args)
+        print("Unique Test Labels {}".format(np.unique(labels_test, return_counts=True)))
+        print("Unique Train Labels {}".format(np.unique(labels, return_counts=True)))
+        print("Features Test Shape {}".format(features_test.shape))
+        print("Features Shape {}".format(features.shape))
+    else:    
+        data, features, labels = resolve_data(args)
 
      # unique count of labels
-    print("Unique Labels {}".format(np.unique(labels, return_counts=True)))
-    features = remove_bad_features(features)
-    scaler = StandardScaler()
-    
-    # features = scaler.fit_transform(features)
-
-    # clf = DecisionTreeClassifier(max_depth=2)
-    # clf.fit(features, labels)
-    # print("Score {}".format(clf.score(features, labels)))
-    # print("Feature Importance {}".format(clf.feature_importances_))
-    # print("Feature Importance Argmax {}".format(clf.feature_importances_.argmax()))
-
-    total_data = features.copy()
-    total_labels = labels.copy()
-
-    if args.data != 'wine':
-        #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
-        features = add_epsilon_noise(features=features)
-        if args.data == 'bank':
-            labels = 1-labels # switch 0 and 1
-    else:
-        labels[labels != 0] = 1
-
-    features = scaler.fit_transform(features)
-    # randomly select 10000 samples from features
-    labels_svm = labels.copy()
-    labels_svm[labels_svm == 0] = -1
-    features_subset, labels_subset = shuffle(features, labels_svm, random_state=42)
-    features_subset = features_subset[:10000]
-    labels_subset = labels_subset[:10000]
-   
-
-    init_dist_mat = init_covar(features, normalize=args.normalize, identity=args.identity)
     print("Data {} Shape {}".format(args.data, features.shape))
-
-    bm = BoostMetric(data=features, labels=labels, init_dist_mat=init_dist_mat, args=args, v=args.v, J=args.iters, top_k=args.k)
-    X = bm.iterate()
-    w, Z = bm.get_w_Z()
-    us = bm.get_us()
-    argmax_u = np.argmax(us, axis=0)
-    print("Argmax U {}".format(us[argmax_u]))
-    print("Argmax of U in W {}".format(w[argmax_u]))
-    #print(us)
-    print("Length of w {}".format(len(w)))
-    plot_precision_recall(args, bm)
-   
-    #print("SVM Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, svm_boost_preds), precision_score(1-labels, svm_boost_preds), recall_score(1-labels, svm_boost_preds)))
-    #print("SVM Naive Boost: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, naive_preds), precision_score(1-labels, naive_preds), recall_score(1-labels, naive_preds)))
-    print("BoostMetric: F1 {}, Precision {}, Recall {}".format(bm.f1s[-1], bm.precisions[-1], bm.recalls[-1]))
-    #total_distances = mahal_all_points(features, X)
-    #knn_clf = KNeighborsClassifier(n_neighbors=3, metric='precomputed')
-    #knn_clf.fit(total_distances, labels)
-    #knn_preds = knn_clf.predict(total_distances)
-    #print("KNN: F1 {}, Precision {}, Recall {}".format(f1_score(labels, knn_preds), precision_score(labels, knn_preds), recall_score(labels, knn_preds)))
-    #knn_clf_euclidean = KNeighborsClassifier(n_neighbors=3, metric='euclidean')
-    #knn_clf_euclidean.fit(features, labels)
-    #knn_preds_euclidean = knn_clf_euclidean.predict(features)
-    #print("KNN Euclidean: F1 {}, Precision {}, Recall {}".format(f1_score(labels, knn_preds_euclidean), precision_score(labels, knn_preds_euclidean), recall_score(labels, knn_preds_euclidean)))
-    preds_mahal_percentile = predict_percentile(args, features, X, labels=labels, percentile=95, dist='mahalanobis')
-    print("Mahal Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_percentile), precision_score(1-labels, 1-preds_mahal_percentile), recall_score(1-labels, 1-preds_mahal_percentile)))
-    preds_euclidean_percentile = predict_percentile(args, features, X=None, labels=labels, percentile=95, dist='euclidean')
-    print("Euclidean Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_euclidean_percentile), precision_score(1-labels, 1-preds_euclidean_percentile), recall_score(1-labels, 1-preds_euclidean_percentile)))
-    pca_clf = PCA(n_components=2)
-    pca_data = pca_clf.fit_transform(features)
-    preds_pca_euclidean_percentile = predict_percentile(args, pca_data, X=None, labels=labels, percentile=95, dist='euclidean')
-    print("PCA Euclidean Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_pca_euclidean_percentile), precision_score(1-labels, 1-preds_pca_euclidean_percentile), recall_score(1-labels, 1-preds_pca_euclidean_percentile)))
-    preds_mahal_default_percentile = predict_percentile(args, features, X=inv(np.cov(features.T)), labels=labels, percentile=95, dist='mahalanobis')
-    print("Mahal Default Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_default_percentile), precision_score(1-labels, 1-preds_mahal_default_percentile), recall_score(1-labels, 1-preds_mahal_default_percentile)))
-    
-
-    dists = []
-    mu = np.mean(features, axis=0)
-    for i in range(features.shape[0]):
-        a_i = features[i, :]
-        curr_dist = np.linalg.norm(a_i - mu)
-        dists.append(curr_dist)
-    dists = np.array(dists)
-    anom_dists = dists[labels == 0]
-    nominal_dists = dists[labels == 1]
-
-    # save histogram of distances
-    sns.histplot(anom_dists, alpha=0.5, label='anomalies', kde=True)
-    sns.histplot(nominal_dists, alpha=0.5, label='nominal', kde=True)
-    plt.legend(loc='best')
-    plt.xlabel('Distance to Mean')
-    plt.tight_layout()
-    plt.savefig('./figures/debugging_figs/dist_hist_euclid_{}'.format(args.data))
-    plt.close()
-
-    ##########
-
-    #final_classification(features=features, labels=labels, X=X)
-    ##############################
-
-def main_true(args):
-    data, features, labels = resolve_data(args)
-
-     # unique count of labels
     print("Unique Labels {}".format(np.unique(labels, return_counts=True)))
     features = remove_bad_features(features)
     scaler = StandardScaler()
-    
     # features = scaler.fit_transform(features)
 
     # clf = DecisionTreeClassifier(max_depth=2)
@@ -389,35 +317,15 @@ def main_true(args):
     binary_columns = [i for i in range(features.shape[1]) if np.unique(features[:, i]).size == 2]
     numeric_columns = [i for i in range(features.shape[1]) if i not in binary_columns]
     print("Number of Binary Columns {}".format(len(binary_columns)))
-    #############
-    # if len(binary_columns) > 0:
-    #     features_lim = features[:, binary_columns]
-
-    #     reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='jaccard')
-
-    #     # Fit and transform the data
-    #     X_umap = reducer.fit_transform(features_lim)
-
-    #     # Create a scatter plot
-    #     plt.figure(figsize=(8, 6))
-    #     plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
-    #     plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
-    #     mean_class0 = np.mean(X_umap[labels == 0], axis=0)
-    #     mean_class1 = np.mean(X_umap[labels == 1], axis=0)
-    #     plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
-    #     plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
-    #     plt.legend()
-    #     plt.title("t-SNE Visualization of Two-Class Dataset")
-    #     plt.xlabel("t-SNE Dimension 1")
-    #     plt.ylabel("t-SNE Dimension 2")
-    #     plt.savefig('./figures/debugging_figs_true/tsne_{}_binary'.format(args.data))
-    #     plt.close()
-    ###########
     
     if args.data != 'wine':
         #features, labels = smart_sampling(features=features, labels=labels, num_anoms=10, num_nominals=100)
         if args.data == 'bank':
             labels = 1-labels # switch 0 and 1
+
+        if 'dlpaper' in args.data:
+            labels = 1-labels # switch 0 and 1 for dlpaper datasets
+
         if args.data in ['bank', 'unsw', 'nslkdd', 'campaign']:
             features = add_epsilon_noise(features=features) # numerical stability
         
@@ -463,6 +371,8 @@ def main_true(args):
 
     # shuffle the data
     features, labels = shuffle(features, labels, random_state=42)
+    # visualize_2d_embedding(features, labels, method='umap', args=args)
+    # exit()
     ###################
     # reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
 
@@ -470,20 +380,20 @@ def main_true(args):
     # X_umap = reducer.fit_transform(features)
 
     # # Create a scatter plot
-    # plt.figure(figsize=(8, 6))
-    # plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Class 0", alpha=0.6, c='blue', s=25)
-    # plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Class 1", alpha=0.4, c='orange', s=10)
+    # ref_font_size = 20
+    # plt.figure(figsize=(12, 8))
+    # plt.scatter(X_umap[labels == 0, 0], X_umap[labels == 0, 1], label="Anomaly", alpha=0.6, c='blue', s=25)
+    # plt.scatter(X_umap[labels == 1, 0], X_umap[labels == 1, 1], label="Nominal", alpha=0.4, c='orange', s=10)
     # mean_class0 = np.mean(X_umap[labels == 0], axis=0)
     # mean_class1 = np.mean(X_umap[labels == 1], axis=0)
-    # plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Class 0 Center")
-    # plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Class 1 Center")
+    # plt.scatter(mean_class0[0], mean_class0[1], c='blue', edgecolors='black', s=300, marker='X', label="Anomaly Center")
+    # plt.scatter(mean_class1[0], mean_class1[1], c='orange', edgecolors='black', s=300, marker='X', label="Nominal Center")
     # plt.legend()
-    # plt.title("t-SNE Visualization of Two-Class Dataset")
-    # plt.xlabel("t-SNE Dimension 1")
-    # plt.ylabel("t-SNE Dimension 2")
-    # plt.savefig('./figures/debugging_figs_true/tsne_{}'.format(args.data))
+    # plt.title("t-SNE Visualization of Two-Class Dataset", fontsize=ref_font_size+4)
+    # plt.xlabel("t-SNE Dimension 1", fontsize=ref_font_size)
+    # plt.ylabel("t-SNE Dimension 2", fontsize=ref_font_size)
+    # plt.savefig('./figures/tsne/tsne_{}'.format(args.data))
     # plt.close()
-
     # # Initialize UMAP for 3D
     # reducer_3d = umap.UMAP(n_components=3, random_state=42, n_neighbors=30, metric='euclidean', min_dist=0.1)
     # X_umap_3d = reducer_3d.fit_transform(features)
@@ -516,30 +426,9 @@ def main_true(args):
     # exit()
     ###################
     
-    # randomly select 10000 samples from features
-    # labels_svm = labels.copy()
-    # labels_svm[labels_svm == 0] = -1
-    # features_subset, labels_subset = shuffle(features, labels_svm, random_state=42)
-    # features_subset = features_subset[:10000]
-    # labels_subset = labels_subset[:10000]
-   
-
-    # visualize_2d_embedding(features, labels, method='umap', args=args)
-    # visualize_2d_embedding(features, labels, method='tsne', args=args)
-
-    ###
-    # GMM STUFF
-    # k = 5
-    # print("Fitting GMM with {} components".format(k))
-    # gmm = GaussianMixture(n_components=k, covariance_type='diag', random_state=42)
-    # gmm.fit(features)
-    # print("GMM Weights {}".format(gmm.weights_))
-    # print("GMM Means {}".format(gmm.means_))
-    # print("GMM Covariances {}".format(gmm.covariances_))
-    # exit()
     runtimes = []
-    for seed in range(40, 41):
-    # for seed in range(40, 50):
+    # for seed in range(40, 41):
+    for seed in range(40, 50):
         print(">>>> SEED {} <<<<".format(seed))
         print("Data {} Shape {}".format(args.data, features.shape))
         if args.query_method == 'km':
@@ -579,29 +468,61 @@ def main_true(args):
         preds_mahal_default_percentile = predict_percentile(args, features, X=inv(np.cov(features.T)), labels=labels, percentile=95, dist='mahalanobis')
         print("Mahal Default Percentile: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-preds_mahal_default_percentile), precision_score(1-labels, 1-preds_mahal_default_percentile), recall_score(1-labels, 1-preds_mahal_default_percentile)))
         top_5_percent_preds = predict_top_5_percent(args, features, X, labels)
+        ##############
+        if 'dlpaper' in args.data:
+            # top_5_percent_preds = predict_top_5_percent(args, features_test, X, labels_test)
+            #dl_prec, dl_rec, dl_f1 = compute_pre_recall_f1(labels_test, bm.get_anomaly_scores(features_test))
+            dl_prec = precision_score(1-labels, 1-top_5_percent_preds)
+            dl_rec = recall_score(1-labels, 1-top_5_percent_preds)
+            dl_f1 = f1_score(1-labels, 1-top_5_percent_preds)
+            # print("DL Paper F1 Score: {}".format(dl_f1))
+            #print("Top 5 Percent DLPAPER: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels_test, 1-top_5_percent_preds), precision_score(1-labels_test, 1-top_5_percent_preds), recall_score(1-labels_test, 1-top_5_percent_preds)))
+        ##############
         print("Top 5 Percent: F1 {}, Precision {}, Recall {}".format(f1_score(1-labels, 1-top_5_percent_preds), precision_score(1-labels, 1-top_5_percent_preds), recall_score(1-labels, 1-top_5_percent_preds)))
         anomaly_scores = bm.get_anomaly_scores(features)
-        anomaly_scores_default = calc_anomaly_scores(features, inv(np.cov(features.T)), np.mean(features, axis=0))
-        print("ROC AUC Default {}".format(roc_auc_score(1-labels, anomaly_scores_default)))
-        print("ROC AUC Mahal {}".format(roc_auc_score(1-labels, anomaly_scores)))
-        print("Average Precision Score Default {}".format(average_precision_score(1-labels, anomaly_scores_default)))
-        print("Average Precision Score Mahal {}".format(average_precision_score(1-labels, anomaly_scores)))
-        # save the precision score to a file specific to the data
-        os.makedirs('./results{}'.format(args.query_method), exist_ok=True)
-        with open('./results{}/precision_scores_{}_{}.txt'.format(args.query_method, args.data, args.save_suffix), 'w') as f:
-            f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_percentile)))
-            # add recall and f1
-            f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_percentile)))
-            f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_percentile)))
-            f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores)))
-            f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores)))
-        with open('./results{}/precision_scores_{}_default.txt'.format(args.query_method, args.data), 'w') as f:
-            f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_default_percentile)))
-            # add recall and f1
-            f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_default_percentile)))
-            f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_default_percentile)))
-            f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores_default)))
-            f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores_default)))
+        ##############
+        if 'dlpaper' in args.data:
+            # anomaly_scores = bm.get_anomaly_scores(features_test)
+            #top_5_percent_preds = predict_top_5_percent(args, features_test, X, labels_test)
+            #print("Average Precision Score Mahal {} DLPAPER".format(average_precision_score(labels_test, anomaly_scores)))
+            #print("ROC AUC Mahal {} DLPAPER".format(roc_auc_score(labels_test, anomaly_scores)))
+            os.makedirs('./results{}_dl'.format(args.query_method), exist_ok=True)
+            with open('./results{}_dl/precision_scores_{}_{}.txt'.format(args.query_method, args.data, args.save_suffix), 'a') as f:
+                f.write("Seed {} Precision {}\n".format(seed, dl_prec))
+                # add recall and f1
+                f.write("Seed {} Recall {}\n".format(seed, dl_rec))
+                f.write("Seed {} F1 {}\n".format(seed, dl_f1))
+                # f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(labels_test, anomaly_scores)))
+                # f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(labels_test, anomaly_scores)))
+                f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores)))
+                f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores)))
+            print("ROC AUC DLPAPER {}".format(roc_auc_score(1-labels, anomaly_scores)))
+            print("Average Precision Score DLPAPER {}".format(average_precision_score(1-labels, anomaly_scores)))
+
+
+        ##############
+        else:
+            anomaly_scores_default = calc_anomaly_scores(features, inv(np.cov(features.T)), np.mean(features, axis=0))
+            print("ROC AUC Default {}".format(roc_auc_score(1-labels, anomaly_scores_default)))
+            print("ROC AUC Mahal {}".format(roc_auc_score(1-labels, anomaly_scores)))
+            print("Average Precision Score Default {}".format(average_precision_score(1-labels, anomaly_scores_default)))
+            print("Average Precision Score Mahal {}".format(average_precision_score(1-labels, anomaly_scores)))
+            # save the precision score to a file specific to the data
+            os.makedirs('./results_{}'.format(args.query_method), exist_ok=True)
+            with open('./results_{}/precision_scores_{}_{}.txt'.format(args.query_method, args.data, args.save_suffix), 'a') as f:
+                f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_percentile)))
+                # add recall and f1
+                f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_percentile)))
+                f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_percentile)))
+                f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores)))
+                f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores)))
+            with open('./results_{}/precision_scores_{}_default.txt'.format(args.query_method, args.data), 'a') as f:
+                f.write("Seed {} Precision {}\n".format(seed, precision_score(1-labels, 1-preds_mahal_default_percentile)))
+                # add recall and f1
+                f.write("Seed {} Recall {}\n".format(seed, recall_score(1-labels, 1-preds_mahal_default_percentile)))
+                f.write("Seed {} F1 {}\n".format(seed, f1_score(1-labels, 1-preds_mahal_default_percentile)))
+                f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores_default)))
+                f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores_default)))
 
         
         print(">>>>__________<<<<")
@@ -609,14 +530,16 @@ def main_true(args):
     runtimes = np.array(runtimes)
     if args.query_method == 'km':
         args.save_suffix = 'km'
-    np.savetxt('./results_runtimes/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
+    if 'dlpaper' in args.data:
+        os.makedirs('./results_runtimes_dl', exist_ok=True)
+        np.savetxt('./results_runtimes_dl/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
+    else:
+        np.savetxt('./results_runtimes/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
 
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    #main(args)
-    main_true(args)
-    #main_boost(args)
+    main(args)
 
    

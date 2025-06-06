@@ -12,7 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC, OneClassSVM
 from sklearn.metrics import DistanceMetric, pairwise_distances_chunked, f1_score, precision_score, recall_score, precision_recall_curve, average_precision_score, accuracy_score, pairwise_distances, silhouette_score, roc_auc_score
-from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score
+from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, precision_recall_fscore_support
 from sklearn.mixture import GaussianMixture
 from sklearn.utils import shuffle
 from sklearn.manifold import TSNE
@@ -40,8 +40,8 @@ sns.set()
 #import torch
 np.random.seed(42)
 
-from gmm import sim_gmm
-from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
+# from gmm import sim_gmm
+# from ocsvm import OCSVMBoost, NaiveBoostedOneClassSVM, OCSVMCVXPrimal, OCSVMCVXDual, OCSVMCVXPrimalRad, OCSVMCVXDualRad, ocsvm_solver, compute_rho, OCSVMRadAlt, SemiSupervisedOneClassSVM, OCSVMCVXPrimalMinimization, OCSVMMix
 from aad_metric_model import BoostMetric
 #from aad_metric_model_v2 import AADMetricModel
 from aad_metric_model_gmm import AADMetricModel
@@ -55,8 +55,8 @@ faulthandler.enable()
 
 from copy import deepcopy
 
-import gapstatistics
-from gapstatistics.gapstatistics import GapStatistics
+# import gapstatistics
+# from gapstatistics.gapstatistics import GapStatistics
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -166,6 +166,11 @@ def resolve_data(args):
         return load_spam_data(args)
     elif args.data == 'svhn':
         return load_svhn_data(args)
+    elif 'dlpaper' in args.data and 'cifar' in args.data:
+        # return load_cifar_numbered_data_dlpaper(args, cnum=int(args.data.split('_')[-2]), itr=int(args.data.split('_')[-1]))
+        return load_cifar_numbered_data_dlpaper_seed(args, cnum=int(args.data.split('_')[-2]), seed=int(args.data.split('_')[-1]))
+    elif 'dlpaper' in args.data and 'fashion' in args.data:
+        return load_fashion_numbered_data_dlpaper_seed(args, cnum=int(args.data.split('_')[-2]), seed=int(args.data.split('_')[-1]))
     elif 'cifar' in args.data:
         return load_cifar_numbered_data(args, num=int(args.data.split('_')[-1]))
     elif 'fashion' in args.data:
@@ -526,9 +531,29 @@ def calc_anomaly_scores(features, A_t, mean_vec):
 
     return np.array(dists)
 
+def compute_pre_recall_f1(target, score):
+    normal_ratio = (target == 0).sum() / len(target)
+    print("Target Unique {}".format(np.unique(target, return_counts=True)))
+    print("Normal Ratio {}".format(normal_ratio))
+    threshold = np.percentile(score, 100 * normal_ratio)
+    pred = np.zeros(len(score))
+    pred[score > threshold] = 1
+    print("     >> Number of Predicted Anomalies {}".format((pred == 1).sum()))
+    precision, recall, f1, _ = precision_recall_fscore_support(target, pred, average='binary')
 
-def main_true(args):
-    data, features, labels = resolve_data(args)
+    return precision, recall, f1
+
+def main(args):
+    # data, features, labels = resolve_data(args)
+    if 'dlpaper' in args.data:
+        features, labels, features_test, labels_test = resolve_data(args)
+        print("Unique Test Labels {}".format(np.unique(labels_test, return_counts=True)))
+        print("Unique Train Labels {}".format(np.unique(labels, return_counts=True)))
+        print("Features Test Shape {}".format(features_test.shape))
+        print("Features Shape {}".format(features.shape))
+    else:    
+        data, features, labels = resolve_data(args)
+
 
      # unique count of labels
     print("Unique Labels {}".format(np.unique(labels, return_counts=True)))
@@ -559,6 +584,8 @@ def main_true(args):
             features = np.zeros_like(features)
             features[:, numeric_columns] = features_numeric
             features[:, binary_columns] = features_binary_noisy
+        if 'dlpaper' in args.data:
+            labels = 1-labels # switch 0 and 1 for dlpaper datasets
         
 
     else:
@@ -633,7 +660,7 @@ def main_true(args):
     # best_k, metrics = evaluate_k_range(features, k_range=range(2, 11), max_pca_dim=20, random_state=42, plot_path=None)
     # evaluate_kmeans(features_reduced, k_range=range(2, 11), save_path="./results_kmeans_reduced", dataset_name=args.data)
     runtimes = []
-    for seed in range(40, 50):
+    for seed in range(40, 41):
         print(">>>> SEED {} <<<<".format(seed))
         print("Data {} Shape {}".format(args.data, features.shape))
         full_covariance = False
@@ -702,6 +729,33 @@ def main_true(args):
         # save the precision score to a file specific to the data
         if args.interleaving:
             args.save_suffix = "interleaving"
+        if 'dlpaper' in args.data:
+            # top_5_percent_preds = predict_top_5_percent(args, features_test, X, labels_test)
+            top_5_percent_preds = predict_top_5_percent_gmms(features, gmms)
+
+            # anomaly_scores = get_anomaly_scores(features_test, gmms)
+            print("Labels Shape {} Anomaly Scores Shape {}".format(labels.shape, anomaly_scores.shape))
+
+            # dl_prec, dl_rec, dl_f1 = compute_pre_recall_f1(1-labels, anomaly_scores)
+            dl_prec = precision_score(1-labels, 1-top_5_percent_preds)
+            dl_rec = recall_score(1-labels, 1-top_5_percent_preds)
+            dl_f1 = f1_score(1-labels, 1-top_5_percent_preds)
+
+            print("DL Paper Precision: {}".format(dl_prec))
+            print("DL Paper Recall: {}".format(dl_rec))
+            print("DL Paper F1 Score: {}".format(dl_f1))
+
+            print("Average Precision Score Mahal {} DLPAPER".format(average_precision_score(1-labels, anomaly_scores)))
+            print("ROC AUC Mahal {} DLPAPER".format(roc_auc_score(1-labels, anomaly_scores)))
+            os.makedirs('./results_gmms_dl', exist_ok=True)
+            with open('./results_gmms_dl/precision_scores_{}_{}.txt'.format(args.data, args.save_suffix), 'a') as f:
+                f.write("Seed {} Precision {}\n".format(seed, dl_prec))
+                # add recall and f1
+                f.write("Seed {} Recall {}\n".format(seed, dl_rec))
+                f.write("Seed {} F1 {}\n".format(seed, dl_f1))
+                f.write("Seed {} ROC AUC {}\n".format(seed, roc_auc_score(1-labels, anomaly_scores)))
+                f.write("Seed {} Average Precision {}\n".format(seed, average_precision_score(1-labels, anomaly_scores)))
+
         if full_covariance:
             os.makedirs('./results_gmms_seeds_full', exist_ok=True)
             with open('./results_gmms_seeds_full/precision_scores_{}_{}_{}.txt'.format(args.data, args.save_suffix, best_k), 'a') as f:
@@ -740,7 +794,13 @@ def main_true(args):
         
         print(">>>>__________<<<<")
     runtimes = np.array(runtimes)
-    np.savetxt('./results_runtimes_gmms/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
+    # np.savetxt('./results_runtimes_gmms/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
+    os.makedirs('./results_runtimes_gmms', exist_ok=True)
+    os.makedirs('./results_runtimes_dl_gmms', exist_ok=True)
+    if 'dlpaper' in args.data:
+        np.savetxt('./results_runtimes_dl_gmms/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
+    else:
+        np.savetxt('./results_runtimes_gmms/runtimes_{}_{}.txt'.format(args.data, args.save_suffix), runtimes)
 
 def evaluate_kmeans(features, k_range=range(2, 11), save_path="./results_kmeans", dataset_name="mydataset"):
     os.makedirs(save_path, exist_ok=True)
@@ -858,8 +918,7 @@ def evaluate_k_range(features, k_range=range(2, 11), max_pca_dim=20, plot_path='
 
 if __name__ == "__main__":
     args = parse_arguments()
-    #main(args)
-    main_true(args)
-    #main_boost(args)
+    main(args)
+    # main_true(args)
 
    

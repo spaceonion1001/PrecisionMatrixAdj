@@ -77,8 +77,8 @@ class AADMetricModel:
         self.f1s = []
         self.num_preds = []
 
-        # for j in tqdm(range(self.J)):
-        for j in range(self.J):
+        for j in tqdm(range(self.J)):
+        # for j in range(self.J):
             # print(">>> ITER {} <<<".format(j))
             if self.args.query_method == 'km':
                 u_point, delta, curr_Z, is_anomaly, mu = self.get_query_km()

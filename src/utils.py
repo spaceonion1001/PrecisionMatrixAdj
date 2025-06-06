@@ -387,6 +387,48 @@ def load_cifar_numbered_data(args, num=0):
 
     return data.values, features.astype(float), classes
 
+def load_cifar_numbered_data_dlpaper(args, cnum=0, itr=0):
+    path = args.data_path + '/vision_processed/embeddings/'
+
+    cifar_path = os.path.join(path, 'cifar10_feat_{}_{}_train.npz'.format(cnum, itr))
+    cifar_path_test = os.path.join(path, 'cifar10_feat_{}_{}_test.npz'.format(cnum, itr))
+    data = np.load(cifar_path)
+    data_test = np.load(cifar_path_test)
+    features = data['embs']
+    labels = data['labels']
+    features_test = data_test['embs']
+    labels_test = data_test['labels']
+
+    return features.astype(float), labels.astype(int), features_test.astype(float), labels_test.astype(int)
+
+def load_cifar_numbered_data_dlpaper_seed(args, cnum=0, seed=0):
+    path = args.data_path + '/vision_processed/defaults/'
+
+    cifar_path = os.path.join(path, 'cifar10_{}_{}_train.npz'.format(cnum, seed))
+    cifar_path_test = os.path.join(path, 'cifar10_{}_{}_test.npz'.format(cnum, seed))
+    data = np.load(cifar_path)
+    data_test = np.load(cifar_path_test)
+    features = data['data']
+    labels = data['labels']
+    features_test = data_test['data']
+    labels_test = data_test['labels']
+
+    return features.astype(float), labels.astype(int), features_test.astype(float), labels_test.astype(int)
+
+def load_fashion_numbered_data_dlpaper_seed(args, cnum=0, seed=0):
+    path = args.data_path + '/vision_processed/defaults/'
+
+    cifar_path = os.path.join(path, 'fashion_{}_{}_train.npz'.format(cnum, seed))
+    cifar_path_test = os.path.join(path, 'fashion_{}_{}_test.npz'.format(cnum, seed))
+    data = np.load(cifar_path)
+    data_test = np.load(cifar_path_test)
+    features = data['data']
+    labels = data['labels']
+    features_test = data_test['data']
+    labels_test = data_test['labels']
+
+    return features.astype(float), labels.astype(int), features_test.astype(float), labels_test.astype(int)
+
 def load_fashion_numbered_data(args, num=0):
     path = args.data_path + '/vision_processed/'
 
