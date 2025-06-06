@@ -24,10 +24,10 @@ sns.set()
 #     "ps.fonttype": 42
 # })
 
-base_dir_aad = '/mnt/c/Users/xdink/Documents/Research/ad_examples-master/ad_examples-master/temp/aad/'
-base_dir_boost = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/figures/debugging_figs_true/'
-save_dir = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/figures/aad_plots/'
-base_dir_fif = '/mnt/c/Users/xdink/Documents/Research/FeedbackIsolationForest-master/FeedbackIsolationForest-master/results/'
+base_dir_aad = ''
+base_dir_boost = ''
+save_dir = ''
+base_dir_fif = ''
 
 marker_size = 200
 ref_font_size = 22
@@ -115,8 +115,9 @@ def main(save_suffix='normed_nok_deweight'):
 
 
 def get_last_seed_f1(file_path):
-    # THIS IS ONLY BECAUSE I USED APPEND INSTEAD OF WRITE
+    # THIS IS BECAUSE OF APPEND INSTEAD OF WRITE
     # AND IT APPENDED THE LAST LINE TO THE FILE
+    # THIS IS USED FOR PMA - DETERMINISTIC
     pattern = re.compile(r"Seed (\d+) F1 ([0-9.]+)")
     last_match = None
 
@@ -307,12 +308,12 @@ def main_plot_runtimes_vs_f1():
     cifar_datasets = ['cifar_{}'.format(x) for x in range(10)]
     fashion_datasets = ['fashion_{}'.format(x) for x in range(10)]
     datasets = datasets + cifar_datasets + fashion_datasets
-    base_dir_single_rt = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes/'
-    base_dir_gmm_rt = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes_gmms/'
-    base_dir_single_f1 = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results/'
-    base_dir_gmm_f1 = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gmms_seeds/'
-    gaod_base_dir = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gaod/'
-    aad_base_dir = '/mnt/c/Users/xdink/Documents/Research/ad_examples-master/ad_examples-master/prec_results_backup/'
+    base_dir_single_rt = ''
+    base_dir_gmm_rt = ''
+    base_dir_single_f1 = ''
+    base_dir_gmm_f1 = ''
+    gaod_base_dir = ''
+    aad_base_dir = ''
 
     for dataset in datasets:
         runtimes = {}
@@ -593,12 +594,12 @@ def main_plot_runtimes_vs_prauc():
     cifar_datasets = ['cifar_{}'.format(x) for x in range(10)]
     fashion_datasets = ['fashion_{}'.format(x) for x in range(10)]
     datasets = datasets + cifar_datasets + fashion_datasets
-    base_dir_single_rt = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes/'
-    base_dir_gmm_rt = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes_gmms/'
-    base_dir_single_f1 = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results/'
-    base_dir_gmm_f1 = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gmms_seeds/'
-    gaod_base_dir = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gaod/'
-    aad_base_dir = '/mnt/c/Users/xdink/Documents/Research/ad_examples-master/ad_examples-master/prec_results_backup/'
+    base_dir_single_rt = ''
+    base_dir_gmm_rt = ''
+    base_dir_single_f1 = ''
+    base_dir_gmm_f1 = ''
+    gaod_base_dir = ''
+    aad_base_dir = ''
 
     for dataset in datasets:
         runtimes = {}
