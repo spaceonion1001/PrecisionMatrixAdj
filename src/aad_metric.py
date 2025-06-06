@@ -54,7 +54,7 @@ faulthandler.enable()
 def parse_arguments():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data_path', type=str, default='C:\\Users\\xdink\\Documents\\Research\\OnlineMetricLearning\\data')
+    parser.add_argument('--data_path', type=str, default='')
     parser.add_argument('--data', type=str, default='census')
     parser.add_argument('--budget', type=int, default=40)
     parser.add_argument('--iters', type=int, default=100)
