@@ -15,11 +15,11 @@ from plotting import get_last_seed_f1, get_last_seed_ap, parse_f1_scores, parse_
 sns.set()
 
 
-base_dir_fif = '/mnt/c/Users/xdink/Documents/Research/FeedbackIsolationForest-master/FeedbackIsolationForest-master/results/'
-base_dir_aad = '/mnt/c/Users/xdink/Documents/Research/ad_examples-master/ad_examples-master/prec_results/'
-base_dir_results = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results/'
-base_dir_gaod = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gaod/'
-base_dir_results_gmm = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gmms_seeds/'
+base_dir_fif = ''
+base_dir_aad = ''
+base_dir_results = ''
+base_dir_gaod = ''
+base_dir_results_gmm = ''
 
 def get_fif_scores(dataset, it):
     file_path = os.path.join(base_dir_fif, f'{dataset}_iter{it}_scores.csv')
