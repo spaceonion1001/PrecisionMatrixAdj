@@ -12,13 +12,13 @@ import glob
 from plotting import get_last_seed_f1, get_last_seed_ap, parse_f1_scores, parse_ap_scores, extract_f1_95, extract_avgprec_95, find_gmm_f1_file
 sns.set()
 
-base_dir_results = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_dl_transduct/'
-base_dir_runtime = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes_dl_transduct/'
-base_dir_results_gmm = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_gmms_dl_transduct/'
-base_dir_runtime_gmm = '/mnt/c/Users/xdink/Documents/Research/OnlineMetricLearning/results_runtimes_dl_gmms_transduct/'
-base_dir_dl = '/mnt/c/Users/xdink/Documents/Research/Active-SOEL/NTL/results/'
-base_dir_dl_runtime = '/mnt/c/Users/xdink/Documents/Research/Active-SOEL/NTL/runtimes_single_query/'
-base_dir_dl_runtime_total = '/mnt/c/Users/xdink/Documents/Research/Active-SOEL/NTL/runtimes_backup/'
+base_dir_results = ''
+base_dir_runtime = ''
+base_dir_results_gmm = ''
+base_dir_runtime_gmm = ''
+base_dir_dl = ''
+base_dir_dl_runtime = ''
+base_dir_dl_runtime_total = ''
 
 
 
