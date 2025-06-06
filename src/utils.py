@@ -625,45 +625,45 @@ def remove_bad_features(features):
     
     return features
 
-def smart_sampling(features, labels, num_anoms=10, num_nominals=100):
-    print("Sampling data - margin based (Manhattan Distance)")
+# def smart_sampling(features, labels, num_anoms=10, num_nominals=100):
+#     print("Sampling data - margin based (Manhattan Distance)")
 
-    # calculate Manhattan distance between all points and the mean
-    feat_mean = np.mean(features, axis=0)
-    dist_vec = np.zeros((features.shape[0],))
+#     # calculate Manhattan distance between all points and the mean
+#     feat_mean = np.mean(features, axis=0)
+#     dist_vec = np.zeros((features.shape[0],))
 
-    for i in range(features.shape[0]):
-        curr_dist = np.sum(np.abs(features[i] - feat_mean))
-        dist_vec[i] = curr_dist
+#     for i in range(features.shape[0]):
+#         curr_dist = np.sum(np.abs(features[i] - feat_mean))
+#         dist_vec[i] = curr_dist
     
-    # get indices of labels with anomaly class (designated class 0)
-    anom_indices = np.asarray(labels == 0).nonzero()[0]
-    nominal_indices = np.asarray(labels != 0).nonzero()[0]
+#     # get indices of labels with anomaly class (designated class 0)
+#     anom_indices = np.asarray(labels == 0).nonzero()[0]
+#     nominal_indices = np.asarray(labels != 0).nonzero()[0]
 
 
-    # need to get top K or whatever indices of nominals close to mean and far from mean
-    # get anomalies close to mean
-    # build triplets of these
-    dist_vec_anoms = dist_vec[anom_indices]
-    dist_vec_nominals = dist_vec[nominal_indices]
-    features_anoms = features[anom_indices, :]
-    features_nominals = features[nominal_indices, :]
+#     # need to get top K or whatever indices of nominals close to mean and far from mean
+#     # get anomalies close to mean
+#     # build triplets of these
+#     dist_vec_anoms = dist_vec[anom_indices]
+#     dist_vec_nominals = dist_vec[nominal_indices]
+#     features_anoms = features[anom_indices, :]
+#     features_nominals = features[nominal_indices, :]
 
-    anoms_sorted = np.argsort(dist_vec_anoms)[::-1]
-    nominals_sorted = np.argsort(dist_vec_nominals)[::-1]
+#     anoms_sorted = np.argsort(dist_vec_anoms)[::-1]
+#     nominals_sorted = np.argsort(dist_vec_nominals)[::-1]
 
-    keep_anomalies_idx = anoms_sorted[-num_anoms:]
-    keep_nominals_far_idx = nominals_sorted[0:num_nominals]
-    keep_nominals_close_idx = nominals_sorted[-num_nominals:]
-    keep_nominals_total_idx = np.array(list(set(np.append(keep_nominals_far_idx, keep_nominals_close_idx))))
+#     keep_anomalies_idx = anoms_sorted[-num_anoms:]
+#     keep_nominals_far_idx = nominals_sorted[0:num_nominals]
+#     keep_nominals_close_idx = nominals_sorted[-num_nominals:]
+#     keep_nominals_total_idx = np.array(list(set(np.append(keep_nominals_far_idx, keep_nominals_close_idx))))
     
-    anomaly_pts = features_anoms[keep_anomalies_idx, :]
-    nominal_pts = features_nominals[keep_nominals_total_idx, :]
-    anom_labels = np.zeros(anomaly_pts.shape[0])
-    nom_labels = np.ones(nominal_pts.shape[0])
-    total_feats = np.concatenate((anomaly_pts, nominal_pts), 0)
-    total_labels = np.concatenate((anom_labels, nom_labels), 0)
+#     anomaly_pts = features_anoms[keep_anomalies_idx, :]
+#     nominal_pts = features_nominals[keep_nominals_total_idx, :]
+#     anom_labels = np.zeros(anomaly_pts.shape[0])
+#     nom_labels = np.ones(nominal_pts.shape[0])
+#     total_feats = np.concatenate((anomaly_pts, nominal_pts), 0)
+#     total_labels = np.concatenate((anom_labels, nom_labels), 0)
 
-    return total_feats, total_labels
+#     return total_feats, total_labels
 
     
