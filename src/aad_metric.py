@@ -437,10 +437,13 @@ def main(args):
         init_dist_mat = init_covar(features, normalize=args.normalize, identity=args.identity)
         
 
-        bm = BoostMetric(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
+        #bm = BoostMetric(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
         if args.v2:
             print("Using V2")
             bm = AADMetricModel(data=features.copy(), labels=labels.copy(), init_dist_mat=init_dist_mat.copy(), args=args, v=args.v, J=args.iters, top_k=args.k, seed=seed)
+        else:
+            print("V1 is deprecated.")
+            exit(1)
         start_time = time.time()
         X = bm.iterate()
         runtime = time.time() - start_time
