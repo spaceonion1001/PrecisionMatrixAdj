@@ -60,7 +60,7 @@ def parse_arguments():
     parser.add_argument('--iters', type=int, default=100)
     parser.add_argument('--v', type=float, default=1e-7)
     parser.add_argument('--pca', action='store_true')
-    parser.add_argument('--k', type=int, default=1)
+    parser.add_argument('--k', type=int, default=1, help='Number of sparse features to weight')
     parser.add_argument('--numfeats', type=int, default=10)
     parser.add_argument('--simple', action='store_true')
     parser.add_argument('--simple_anom', action='store_true')
