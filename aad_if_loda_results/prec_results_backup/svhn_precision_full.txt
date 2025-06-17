@@ -1,0 +1,10 @@
+Precision 0.0
+Precision 0.0
+Precision 0.8552380952380952
+Precision 0.0038095238095238095
+Precision 0.8171428571428572
+Precision 0.0
+Precision 0.0
+Precision 0.0
+Precision 0.0
+Precision 0.0
